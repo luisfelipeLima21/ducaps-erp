@@ -9,6 +9,10 @@
   let cloudSyncReady = false;
   let cloudWriteChain = Promise.resolve();
   let cloudWriteErrorShown = false;
+  let cloudWritesPending = 0;
+  let cloudLoadBusy = false;
+  let lastRemoteStateSignature = null;
+  let localStateRevision = 0;
   const readLocal = () => { try { return JSON.parse(localStorage.getItem('vertice_transactions') || '[]'); } catch { return []; } };
   const readSiteCopy = () => { try { return JSON.parse(localStorage.getItem('vertice_site_copy') || '{}'); } catch { return {}; } };
   let siteCopy = readSiteCopy();
@@ -46,14 +50,17 @@
   const headers = () => ({ apikey: config.key, ...(String(config.key || '').startsWith('sb_publishable_') ? {} : { Authorization: `Bearer ${config.key}` }), 'Content-Type': 'application/json', Prefer: 'return=representation' });
   function saveLocalState(key, value) {
     rawSetLocal(key, value);
+    localStateRevision += 1;
     if (!cloudSyncReady || !config.url || !config.key || !String(key).startsWith('vertice_') || key === 'vertice_supabase') return;
     let parsed; try { parsed = JSON.parse(value); } catch { parsed = value; }
     const row = { key, value: parsed, updated_at: new Date().toISOString() };
+    cloudWritesPending += 1;
     cloudWriteChain = cloudWriteChain.then(async () => {
       const response = await fetch(`${config.url.replace(/\/$/,'')}/rest/v1/app_state?on_conflict=key`, { method: 'POST', headers: { ...headers(), Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(row) });
       if (!response.ok) throw new Error(`Falha ao sincronizar ${key} (${response.status}).`);
       cloudWriteErrorShown = false;
-    }).catch(error => { if (!cloudWriteErrorShown) { cloudWriteErrorShown = true; toast(`${error.message} Confira se executou supabase-schema.sql.`); } });
+    }).catch(error => { if (!cloudWriteErrorShown) { cloudWriteErrorShown = true; toast(`${error.message} Confira se executou supabase-schema.sql.`); } })
+      .finally(() => { cloudWritesPending = Math.max(0, cloudWritesPending - 1); });
   }
   const setConnection = (connected) => { $('#connectionDot').classList.toggle('connected', connected); $('#connectionText').textContent = connected ? 'Supabase conectado' : 'Modo demonstração'; };
   const setMetric = (id, value) => { const el = $(id); if (el) el.innerHTML = `${money(value).replace(',00','')}<span>,${String((Number(value || 0) % 1).toFixed(2).slice(2)).padStart(2,'0')}</span>`; };
@@ -120,13 +127,36 @@
     $('#toggleSiteEditor').textContent = enabled ? '✓ Edição ativa' : '✎ Editar site';
     $('#siteEditToolbar').hidden = !enabled;
   }
-  async function loadRemote() {
+  function hasActiveEditing() {
+    const active = document.activeElement;
+    return Boolean(
+      document.querySelector('.modal-backdrop.open') ||
+      active?.matches?.('input, textarea, select, [contenteditable="true"]') ||
+      active?.closest?.('[contenteditable="true"]')
+    );
+  }
+  const remoteSignature = rows => rows
+    .map(row => `${row.key}:${JSON.stringify(row.value)}`)
+    .sort()
+    .join('|');
+  async function loadRemote(silent = false) {
     if (!config.url || !config.key) { setConnection(false); return; }
+    if (cloudLoadBusy) return;
+    cloudLoadBusy = true;
+    const revisionAtLoadStart = localStateRevision;
     try {
-      cloudSyncReady = false;
+      if (!silent) cloudSyncReady = false;
       const res = await fetch(`${config.url.replace(/\/$/,'')}/rest/v1/app_state?select=key,value`, { headers: headers() });
       if (!res.ok) throw new Error(res.status === 404 ? 'Tabela app_state não encontrada. Execute o arquivo supabase-schema.sql no Supabase.' : `Supabase respondeu ${res.status}. Confira a URL, a chave pública e as políticas.`);
       const rows = await res.json();
+      const signature = remoteSignature(rows);
+      if (lastRemoteStateSignature !== null && signature === lastRemoteStateSignature) {
+        cloudSyncReady = true;
+        if (!silent) setConnection(true);
+        return;
+      }
+      // A consulta pode terminar depois que alguém começou a preencher um formulário.
+      if (silent && (hasActiveEditing() || localStateRevision !== revisionAtLoadStart)) return;
       if (rows.length) {
         Object.keys(localStorage).filter(key => key.startsWith('vertice_') && key !== 'vertice_supabase').forEach(key => localStorage.removeItem(key));
         rows.filter(row => String(row.key).startsWith('vertice_') && row.key !== 'vertice_supabase').forEach(row => rawSetLocal(row.key, JSON.stringify(row.value)));
@@ -144,9 +174,13 @@
           const seedResponse = await fetch(`${base}/rest/v1/app_state?on_conflict=key`, { method: 'POST', headers: { ...headers(), Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(seed) });
           if (!seedResponse.ok) throw new Error(`Falha ao enviar os dados atuais (${seedResponse.status}).`);
         }
+        lastRemoteStateSignature = remoteSignature(seed);
       }
+      if (rows.length) lastRemoteStateSignature = signature;
       hydrateSharedState(); cloudSyncReady = true; setConnection(true);
-    } catch (err) { setConnection(false); toast(err.message || 'Não foi possível conectar ao Supabase.'); }
+    } catch (err) {
+      if (!silent) { cloudSyncReady = false; setConnection(false); toast(err.message || 'Não foi possível conectar ao Supabase.'); }
+    } finally { cloudLoadBusy = false; }
   }
   function hydrateSharedState() {
     const readArray = (key, fallback = []) => { try { const data = JSON.parse(localStorage.getItem(key) || 'null'); return Array.isArray(data) ? data : fallback; } catch { return fallback; } };
@@ -767,5 +801,14 @@
   let startupView = startupMember ? memberLandingView(startupMember) : 'login';
   if (!startupView) { sessionStorage.removeItem(storageSessionKey); startupView = 'login'; $('#loginNotice').textContent = 'Sua conta ainda não tem uma área liberada. Peça ao Dono para configurar suas permissões.'; }
   requestedProtectedView = 'login'; showView(startupView);
-  if (config.url && config.key) loadRemote();
+  if (config.url && config.key) {
+    loadRemote();
+    // Busca alterações feitas por outras pessoas sem interromper quem está preenchendo um campo.
+    setInterval(() => {
+      if (cloudSyncReady && !cloudLoadBusy && cloudWritesPending === 0 && !hasActiveEditing()) loadRemote(true);
+    }, 10000);
+    window.addEventListener('focus', () => {
+      if (cloudSyncReady && !cloudLoadBusy && cloudWritesPending === 0 && !hasActiveEditing()) loadRemote(true);
+    });
+  }
 })();
