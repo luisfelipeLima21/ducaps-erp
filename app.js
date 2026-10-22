@@ -97,7 +97,7 @@
     return `${current?.id ? `#${current.id}` : 'body'}>${parts.join('>')}`;
   }
   function prepareSiteCopy() {
-    const excluded = 'script,style,svg,path,input,textarea,select,option,img,br,#toggleSiteEditor,#themeToggle,#activityList,#employeeRows,#chart,.team-table,.avatar-stack,.avatar,.nav-icon,.metric-icon,.activity-icon,.live-dot,.notification-dot,.connection-dot,#previewCompanyName,#previewServerName,#previewCompanyIcon';
+    const excluded = 'script,style,svg,path,input,textarea,select,option,img,br,#toggleSiteEditor,#activityList,#employeeRows,#chart,.team-table,.avatar-stack,.avatar,.nav-icon,.metric-icon,.activity-icon,.live-dot,.notification-dot,.connection-dot,#previewCompanyName,#previewServerName,#previewCompanyIcon';
     const elements = [...document.body.querySelectorAll('*')];
     elements.forEach(element => {
       if (element.matches(excluded) || element.closest(excluded) || element.hasAttribute('data-site-copy-key')) return;
@@ -191,7 +191,7 @@
     const savedRoles = readArray('vertice_member_roles', defaultRoles); memberRoles = [...new Set(['Dono', ...savedRoles])];
     const savedOrder = readArray('vertice_nav_order', defaultNavOrder); navOrder = [...new Set([...savedOrder.filter(view => defaultNavOrder.includes(view)), ...defaultNavOrder])];
     siteSettings = { ...defaultSiteSettings, ...readObject('vertice_site_settings') }; siteCopy = readObject('vertice_site_copy');
-    applyTheme(localStorage.getItem('vertice_theme') || 'light'); applyNavOrder(); renderNavOrder(); applySiteSettings(); renderRoles(); renderEmployees(); renderStorageCatalog(); renderStorage(); renderProducts(); renderOrders(); renderClients(); renderActivity(); updateMetrics(); prepareSiteCopy(); syncOwnerNavigation();
+    applyTheme(); applyNavOrder(); renderNavOrder(); applySiteSettings(); renderRoles(); renderEmployees(); renderStorageCatalog(); renderStorage(); renderProducts(); renderOrders(); renderClients(); renderActivity(); updateMetrics(); prepareSiteCopy(); syncOwnerNavigation();
   }
   const modal = $('#modalBackdrop');
   function openTransaction(type) { $('#transactionType').value = type || 'income'; $('#transactionForm').reset(); if (type) $('#transactionType').value = type; modal.classList.add('open'); setTimeout(() => $('#description').focus(), 50); }
@@ -238,15 +238,10 @@
     const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([csv], {type:'text/csv;charset=utf-8'})); link.download = 'vertice-movimentacoes.csv'; link.click(); URL.revokeObjectURL(link.href); toast('Relatório exportado em CSV.');
   });
   $('#notifications').addEventListener('click', () => toast('Você está em dia com as notificações.'));
-  function applyTheme(theme) {
-    const dark = theme === 'dark';
-    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-    $('#themeToggle').textContent = dark ? '☀' : '☾';
-    $('#themeToggle').setAttribute('aria-label', dark ? 'Ativar modo claro' : 'Ativar modo escuro');
-    $('#themeToggle').title = dark ? 'Ativar modo claro' : 'Ativar modo escuro';
-    saveLocalState('vertice_theme', dark ? 'dark' : 'light');
+  function applyTheme() {
+    document.documentElement.dataset.theme = 'dark';
+    rawSetLocal('vertice_theme', JSON.stringify('dark'));
   }
-  $('#themeToggle').addEventListener('click', () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
   const titles = {login:'Entrar',inicio:'Visão geral',financeiro:'Financeiro',equipe:'Cadastro de membros',bau:'Controle de baú',encomendas:'Encomendas',clientes:'Cadastro de clientes',operacoes:'Operações',estoque:'Estoque',relatorios:'Relatórios',configuracoes:'Configurações',owner:'Gestão do site'};
   const orderStatuses = ['Recebida','Em andamento','Pronta','Entregue','Cancelada'];
   function updateOrderPrice() {
@@ -775,7 +770,7 @@
     Object.keys(localStorage).filter(key => key.startsWith('vertice_') && key !== 'vertice_supabase').forEach(key => localStorage.removeItem(key));
     transactions = []; employees = []; storageMovements = []; storageCatalog = []; orders = []; clients = []; products = []; memberAccounts = {}; rolePermissions = {}; memberPermissions = {}; sessionStorage.removeItem(storageSessionKey); memberRoles = [...defaultRoles]; siteSettings = { ...defaultSiteSettings };
      saveLocalState('vertice_transactions','[]'); saveLocalState('vertice_employees','[]'); saveLocalState('vertice_storage_movements','[]'); saveLocalState('vertice_storage_catalog','[]'); saveLocalState('vertice_orders','[]'); saveLocalState('vertice_clients','[]'); saveLocalState('vertice_products','[]'); saveLocalState('vertice_role_permissions','{}'); saveLocalState('vertice_member_permissions','{}'); saveLocalState('vertice_member_roles',JSON.stringify(memberRoles)); saveLocalState('vertice_reset_completed','true');
-     cloudSyncReady = Boolean(config.url && config.key); applyTheme('light'); applySiteSettings(); renderRoles(); renderEmployees(); renderStorageCatalog(); renderStorage(); renderProducts(); renderOrders(); renderClients(); updateMetrics(); renderActivity(); syncOwnerNavigation();
+     cloudSyncReady = Boolean(config.url && config.key); applyTheme(); applySiteSettings(); renderRoles(); renderEmployees(); renderStorageCatalog(); renderStorage(); renderProducts(); renderOrders(); renderClients(); updateMetrics(); renderActivity(); syncOwnerNavigation();
     document.querySelectorAll('.team-table .team-row:not(.team-head)').forEach(row => row.remove());
     toast('Informações apagadas.');
   });
@@ -795,7 +790,7 @@
   $('#menuToggle').addEventListener('click', () => { $('#sidebar').classList.toggle('open'); let back = $('.mobile-nav-backdrop'); if (!back) { back = document.createElement('div'); back.className='mobile-nav-backdrop'; document.body.appendChild(back); back.addEventListener('click', () => { $('#sidebar').classList.remove('open'); back.classList.remove('show'); }); } back.classList.toggle('show'); });
   $('#periodSelect').addEventListener('change', e => { const months = Number(e.target.value); document.querySelectorAll('#chart .bar-group').forEach((bar,i,all) => { bar.style.display = months === 3 ? (i >= all.length-3 ? 'flex':'none') : 'flex'; }); });
   if (localStorage.getItem('vertice_reset_completed') === 'true') document.querySelectorAll('.team-table .team-row:not(.team-head)').forEach(row => row.remove());
-  applyTheme(localStorage.getItem('vertice_theme') || 'light');
+  applyTheme();
   applyNavOrder(); renderNavOrder(); applySiteSettings(); updateMetrics(); renderActivity(); renderRoles(); renderEmployees(); renderStorageCatalog(); renderStorage(); renderProducts(); renderOrders(); renderClients(); prepareSiteCopy(); syncOwnerNavigation();
   const startupMember = getStorageMember();
   let startupView = startupMember ? memberLandingView(startupMember) : 'login';
