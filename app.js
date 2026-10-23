@@ -20,6 +20,7 @@
   let transactions = readLocal();
   let storageMovements = (() => { try { const data = JSON.parse(localStorage.getItem('vertice_storage_movements') || '[]'); return Array.isArray(data) ? data : []; } catch { return []; } })();
   let storageCatalog = (() => { try { const data = JSON.parse(localStorage.getItem('vertice_storage_catalog') || '[]'); return Array.isArray(data) ? data : []; } catch { return []; } })();
+  let pendingStorageMovements = [];
   let orders = (() => { try { const data = JSON.parse(localStorage.getItem('vertice_orders') || '[]'); return Array.isArray(data) ? data : []; } catch { return []; } })();
   let clients = (() => { try { const data = JSON.parse(localStorage.getItem('vertice_clients') || '[]'); return Array.isArray(data) ? data.map(client => ({id:client.id || `client-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,familyName:client.familyName || client.name || 'Família sem nome',members:Array.isArray(client.members) ? client.members : [{name:client.name || '',role:client.role || '',phone:client.phone || ''}],createdAt:client.createdAt || new Date().toISOString()})) : []; } catch { return []; } })();
   let products = (() => { try { const data = JSON.parse(localStorage.getItem('vertice_products') || '[]'); return Array.isArray(data) ? data : []; } catch { return []; } })();
@@ -41,7 +42,7 @@
   let config = readConfig();
   localStorage.removeItem('vertice_owner_account');
   localStorage.removeItem('vertice_employee_credentials');
-  const defaultSiteSettings = { companyName: 'Sua Empresa', serverName: 'Cidade Alta RP', ownerName: 'Proprietário', accent: '#c8f36a' };
+  const defaultSiteSettings = { companyName: 'Sua Empresa', serverName: 'Cidade Alta RP', ownerName: 'Proprietário', accent: '#28b8ff' };
   let siteSettings = (() => { try { return { ...defaultSiteSettings, ...JSON.parse(localStorage.getItem('vertice_site_settings') || '{}') }; } catch { return { ...defaultSiteSettings }; } })();
   if ((siteSettings.companyName || '').trim().toLocaleLowerCase('pt-BR') === 'vértice motors') {
     siteSettings.companyName = defaultSiteSettings.companyName;
@@ -258,18 +259,28 @@
     return balances;
   }
   function renderProducts() {
-    const canManageProducts = canMemberDo('encomendas.manageProducts');
+    const canManageProducts = canMemberDo('encomendas.manageProducts'), canDeleteProducts = canMemberDo('encomendas.deleteProducts');
     $('#productForm').hidden = !canManageProducts;
     const selected = $('#orderItem').value;
-    $('#productRows').innerHTML = products.map(product => { const existsInStorage = storageCatalog.some(item => item.name.toLocaleLowerCase('pt-BR') === product.name.toLocaleLowerCase('pt-BR')); const stock = getStorageItemBalances(product.name); const stockLabel = existsInStorage ? `<b>${stock.total.toLocaleString('pt-BR')} un.</b><small>QG ${stock.QG} · Casa ${stock.Casa}</small>` : '<span class="product-stock-missing">Não cadastrado no baú</span>'; return `<tr><td>${safe(product.name)}</td><td>${money(product.unitValue)}</td><td class="product-stock-cell">${stockLabel}</td><td>${canManageProducts ? `<button type="button" class="employee-delete" data-product-delete="${safe(product.id)}" title="Excluir produto" aria-label="Excluir ${safe(product.name)}">×</button>` : ''}</td></tr>`; }).join('');
+    $('#productRows').innerHTML = products.map(product => { const existsInStorage = storageCatalog.some(item => item.name.toLocaleLowerCase('pt-BR') === product.name.toLocaleLowerCase('pt-BR')); const stock = getStorageItemBalances(product.name); const stockLabel = existsInStorage ? `<b>${stock.total.toLocaleString('pt-BR')} un.</b><small>QG ${stock.QG} · Casa ${stock.Casa}</small>` : '<span class="product-stock-missing">Não cadastrado no baú</span>'; return `<tr><td>${safe(product.name)}</td><td>${money(product.unitValue)}</td><td class="product-stock-cell">${stockLabel}</td><td>${canManageProducts ? `<button type="button" class="employee-access" data-product-edit="${safe(product.id)}" title="Editar valor de ${safe(product.name)}">Editar valor</button>` : ''} ${canDeleteProducts ? `<button type="button" class="employee-delete" data-product-delete="${safe(product.id)}" title="Excluir produto" aria-label="Excluir ${safe(product.name)}">×</button>` : ''}</td></tr>`; }).join('');
     $('#productEmpty').hidden = products.length > 0;
     const select = $('#orderItem');
     select.innerHTML = '<option value="">Selecione um produto</option>' + products.map(product => { const existsInStorage = storageCatalog.some(item => item.name.toLocaleLowerCase('pt-BR') === product.name.toLocaleLowerCase('pt-BR')); const stock = getStorageItemBalances(product.name); const availability = existsInStorage ? `Estoque ${stock.total}` : 'Sem cadastro no baú'; return `<option value="${safe(product.id)}">${safe(product.name)} · ${money(product.unitValue)} · ${availability}</option>`; }).join('');
     select.value = products.some(product => String(product.id) === selected) ? selected : products.length === 1 ? String(products[0].id) : '';
+    document.querySelectorAll('[data-product-edit]').forEach(button => button.addEventListener('click', () => {
+      if (!canMemberDo('encomendas.manageProducts')) return toast('O Dono não liberou a edição de produtos para este membro.');
+      const product = products.find(item => String(item.id) === String(button.dataset.productEdit)); if (!product) return;
+      const entered = window.prompt(`Novo valor unitário para ${product.name} (R$):`, String(product.unitValue).replace('.',','));
+      if (entered === null) return;
+      const rawValue = entered.trim(), normalizedValue = rawValue.includes(',') ? rawValue.replace(/\./g,'').replace(',','.') : rawValue;
+      const unitValue = Number(normalizedValue);
+      if (!Number.isFinite(unitValue) || unitValue <= 0) return toast('Informe um valor maior que zero.');
+
+      product.unitValue = unitValue; saveLocalState('vertice_products',JSON.stringify(products)); renderProducts(); renderOrders(); toast('Valor do produto atualizado. Pedidos já cadastrados mantêm o valor original.');
+    }));
     document.querySelectorAll('[data-product-delete]').forEach(button => button.addEventListener('click', () => {
-      if (!canMemberDo('encomendas.manageProducts')) return toast('O Dono não liberou a gestão de produtos para este membro.');
+      if (!canMemberDo('encomendas.deleteProducts')) return toast('O Dono não liberou a exclusão de produtos para este membro.');
       const product = products.find(item => String(item.id) === String(button.dataset.productDelete)); if (!product) return;
-      if (!window.confirm(`Excluir o produto ${product.name}? Encomendas já cadastradas serão mantidas.`)) return;
       products = products.filter(item => String(item.id) !== String(product.id)); saveLocalState('vertice_products',JSON.stringify(products)); renderProducts(); updateOrderPrice(); toast('Produto excluído do catálogo.');
     }));
     updateOrderPrice();
@@ -298,25 +309,26 @@
   $('#orderFamily').addEventListener('change', () => { $('#orderFamilyMember').value = ''; renderOrderFamilies(); });
   function renderOrders() {
     renderOrderFamilies();
-    const canCreateOrders = canMemberDo('encomendas.create'), canManageOrders = canMemberDo('encomendas.manageOrders');
+    const canCreateOrders = canMemberDo('encomendas.create'), canUpdateOrders = canMemberDo('encomendas.updateStatus'), canDeleteOrders = canMemberDo('encomendas.deleteOrders');
     $('#orderForm').hidden = !canCreateOrders;
     const query = ($('#orderSearch').value || '').trim().toLocaleLowerCase('pt-BR');
-    const filtered = orders.filter(order => [order.customer,order.familyName,order.familyMember,order.item,order.responsible,order.status].some(value => String(value || '').toLocaleLowerCase('pt-BR').includes(query)));
+    const statusFilter = $('#orderStatusFilter').value;
+    const filtered = orders.filter(order => (!statusFilter || order.status === statusFilter) && [order.customer,order.familyName,order.familyMember,order.item,order.responsible,order.status].some(value => String(value || '').toLocaleLowerCase('pt-BR').includes(query)));
     $('#orderTotal').textContent = orders.length;
     $('#orderPending').textContent = orders.filter(order => ['Recebida','Em andamento'].includes(order.status)).length;
     $('#orderReady').textContent = orders.filter(order => order.status === 'Pronta').length;
-    $('#orderListCaption').textContent = `${orders.length} ${orders.length === 1 ? 'encomenda cadastrada' : 'encomendas cadastradas'}`;
-    $('#orderRows').innerHTML = filtered.map(order => `<tr><td><b>${safe(order.familyName || order.customer)}</b>${order.familyMember ? `<small class="order-details">${safe(order.familyMember)}</small>` : order.familyName ? '<small class="order-details">Família</small>' : ''}</td><td><b>${safe(order.item)}</b>${order.details ? `<small class="order-details">${safe(order.details)}</small>` : ''}</td><td>${Number(order.quantity).toLocaleString('pt-BR')}</td><td>${money(order.value)}</td><td>${safe(order.responsible || '—')}</td><td>${order.dueDate ? new Date(`${order.dueDate}T00:00:00`).toLocaleDateString('pt-BR') : '—'}</td><td>${canManageOrders ? `<select class="order-status-select status-${order.status.toLocaleLowerCase('pt-BR').replaceAll(' ','-')}" data-order-status="${safe(order.id)}" aria-label="Status da encomenda de ${safe(order.familyName || order.customer)}">${orderStatuses.map(status => `<option value="${status}" ${status === order.status ? 'selected' : ''}>${status}</option>`).join('')}</select>` : `<span class="order-status-select status-${order.status.toLocaleLowerCase('pt-BR').replaceAll(' ','-')}">${safe(order.status)}</span>`}</td><td>${canManageOrders ? `<button class="employee-delete" data-delete-order="${safe(order.id)}" title="Excluir encomenda" aria-label="Excluir encomenda de ${safe(order.familyName || order.customer)}">×</button>` : ''}</td></tr>`).join('');
+    $('#orderListCaption').textContent = `${filtered.length} de ${orders.length} ${orders.length === 1 ? 'encomenda' : 'encomendas'}`;
+    $('#orderRows').innerHTML = filtered.map(order => `<tr><td><b>${safe(order.familyName || order.customer)}</b>${order.familyMember ? `<small class="order-details">${safe(order.familyMember)}</small>` : order.familyName ? '<small class="order-details">Família</small>' : ''}</td><td><b>${safe(order.item)}</b>${order.details ? `<small class="order-details">${safe(order.details)}</small>` : ''}</td><td>${Number(order.quantity).toLocaleString('pt-BR')}</td><td>${money(order.value)}</td><td>${safe(order.responsible || '—')}</td><td>${order.dueDate ? new Date(`${order.dueDate}T00:00:00`).toLocaleDateString('pt-BR') : '—'}</td><td>${canUpdateOrders ? `<select class="order-status-select status-${order.status.toLocaleLowerCase('pt-BR').replaceAll(' ','-')}" data-order-status="${safe(order.id)}" aria-label="Status da encomenda de ${safe(order.familyName || order.customer)}">${orderStatuses.map(status => `<option value="${status}" ${status === order.status ? 'selected' : ''}>${status}</option>`).join('')}</select>` : `<span class="order-status-select status-${order.status.toLocaleLowerCase('pt-BR').replaceAll(' ','-')}">${safe(order.status)}</span>`}</td><td>${canDeleteOrders ? `<button class="employee-delete" data-delete-order="${safe(order.id)}" title="Excluir encomenda" aria-label="Excluir encomenda de ${safe(order.familyName || order.customer)}">×</button>` : ''}</td></tr>`).join('');
     $('#orderEmpty').hidden = filtered.length > 0;
+    if (orders.length && !filtered.length) { $('#orderEmpty b').textContent = 'Nenhuma encomenda encontrada'; $('#orderEmpty small').textContent = 'Ajuste a busca ou o filtro de status.'; } else { $('#orderEmpty b').textContent = 'Nenhuma encomenda cadastrada'; $('#orderEmpty small').textContent = 'Cadastre o primeiro pedido para acompanhar sua entrega.'; }
     document.querySelectorAll('[data-order-status]').forEach(select => select.addEventListener('change', () => {
-      if (!canMemberDo('encomendas.manageOrders')) return toast('O Dono não liberou a gestão de pedidos para este membro.');
+      if (!canMemberDo('encomendas.updateStatus')) return toast('O Dono não liberou a edição do status dos pedidos para este membro.');
       const order = orders.find(item => String(item.id) === String(select.dataset.orderStatus)); if (!order) return;
       order.status = select.value; saveLocalState('vertice_orders',JSON.stringify(orders)); renderOrders(); toast(`Encomenda atualizada: ${order.status}.`);
     }));
     document.querySelectorAll('[data-delete-order]').forEach(button => button.addEventListener('click', () => {
-      if (!canMemberDo('encomendas.manageOrders')) return toast('O Dono não liberou a gestão de pedidos para este membro.');
+      if (!canMemberDo('encomendas.deleteOrders')) return toast('O Dono não liberou a exclusão de pedidos para este membro.');
       const order = orders.find(item => String(item.id) === String(button.dataset.deleteOrder)); if (!order) return;
-      if (!window.confirm(`Excluir a encomenda de ${order.customer}?`)) return;
       orders = orders.filter(item => String(item.id) !== String(order.id)); saveLocalState('vertice_orders',JSON.stringify(orders)); renderOrders(); toast('Encomenda excluída.');
     }));
   }
@@ -345,6 +357,7 @@
     saveLocalState('vertice_orders',JSON.stringify(orders)); event.target.reset(); $('#orderQuantity').value='1'; renderProducts(); renderStorage(); renderOrderFamilies(); renderOrders(); toast('Encomenda cadastrada e estoque do baú atualizado.');
   });
   $('#orderSearch').addEventListener('input', renderOrders);
+  $('#orderStatusFilter').addEventListener('change', renderOrders);
   let editingClientId = null;
   const familyMemberRow = member => `<div class="family-member-row"><label>Nome do membro<input class="family-member-name" required maxlength="80" value="${safe(member?.name || '')}" placeholder="Ex.: Rafael Oliveira"></label><label>Cargo<input class="family-member-role" required maxlength="50" value="${safe(member?.role || '')}" placeholder="Ex.: Gerente"></label><label>Telefone para contato<input class="family-member-phone" maxlength="40" value="${safe(member?.phone || '')}" placeholder="Ex.: 555-0142"></label><button type="button" class="employee-delete family-member-remove" aria-label="Remover membro" title="Remover membro">×</button></div>`;
   function updateFamilyMemberRemoveButtons() { const buttons = document.querySelectorAll('.family-member-remove'); buttons.forEach(button => { button.disabled = buttons.length === 1; }); $('#familyMemberCount').textContent = `${buttons.length} ${buttons.length === 1 ? 'membro' : 'membros'}`; }
@@ -362,7 +375,6 @@
     document.querySelectorAll('[data-delete-client]').forEach(button => button.addEventListener('click', () => {
       if (!canMemberDo('clientes.deleteFamilies')) return toast('O Dono não liberou a exclusão de famílias para este membro.');
       const client = clients.find(item => String(item.id) === String(button.dataset.deleteClient)); if (!client) return;
-      if (!window.confirm(`Excluir ${client.familyName || client.name} do cadastro de clientes?`)) return;
       clients = clients.filter(item => String(item.id) !== String(client.id)); saveLocalState('vertice_clients',JSON.stringify(clients)); renderClients(); toast('Família removida.');
     }));
     document.querySelectorAll('[data-edit-client]').forEach(button => button.addEventListener('click', () => {
@@ -398,7 +410,8 @@
   const canManagePermissions = () => !hasDonoAccount() || String(getStorageMember()?.role || '').toLocaleLowerCase('pt-BR') === 'dono';
   const hasRolePermission = (member, view) => String(member?.role || '').toLocaleLowerCase('pt-BR') === 'dono' || rolePermissions[member?.role]?.[view] === true;
   const hasMemberPermission = (member, view) => { if (String(member?.role || '').toLocaleLowerCase('pt-BR') === 'dono') return true; const overrides = memberPermissions[String(member?.server_id)] || {}; return Object.prototype.hasOwnProperty.call(overrides,view) ? overrides[view] !== false : hasRolePermission(member,view); };
-  const hasMemberAction = (member, action) => !member && !hasDonoAccount() || String(member?.role || '').toLocaleLowerCase('pt-BR') === 'dono' || memberPermissions[String(member?.server_id)]?.[action] === true;
+  const legacyActionAliases = {'encomendas.updateStatus':'encomendas.manageOrders','encomendas.deleteOrders':'encomendas.manageOrders','encomendas.deleteProducts':'encomendas.manageProducts'};
+  const hasMemberAction = (member, action) => { if ((!member && !hasDonoAccount()) || String(member?.role || '').toLocaleLowerCase('pt-BR') === 'dono') return true; const permissions = memberPermissions[String(member?.server_id)] || {}; if (Object.prototype.hasOwnProperty.call(permissions,action)) return permissions[action] === true; const legacy = legacyActionAliases[action]; return Boolean(legacy && permissions[legacy] === true); };
   const canMemberDo = action => {
     const member = getStorageMember();
     const area = action.startsWith('bau.') ? 'bau' : action.startsWith('encomendas.') ? 'encomendas' : action.startsWith('clientes.') ? 'clientes' : '';
@@ -448,7 +461,7 @@
     const selectedMember = employees.find(member => String(member.server_id) === String(selectedPermissionMemberId));
     const groups = [
       {title:'Baú',permissions:[{key:'bau',label:'Acesso ao baú',view:true},{key:'bau.move',label:'Movimentar estoque'},{key:'bau.createItems',label:'Cadastrar itens'},{key:'bau.manageItems',label:'Excluir itens cadastrados'}]},
-      {title:'Encomendas',permissions:[{key:'encomendas',label:'Acesso às encomendas',view:true},{key:'encomendas.create',label:'Criar pedidos'},{key:'encomendas.manageProducts',label:'Gerenciar produtos'},{key:'encomendas.manageOrders',label:'Gerenciar pedidos'}]},
+      {title:'Encomendas',permissions:[{key:'encomendas',label:'Acesso às encomendas',view:true},{key:'encomendas.create',label:'Criar pedidos'},{key:'encomendas.manageProducts',label:'Cadastrar e editar produtos'},{key:'encomendas.deleteProducts',label:'Excluir produtos'},{key:'encomendas.updateStatus',label:'Editar status dos pedidos'},{key:'encomendas.deleteOrders',label:'Excluir pedidos'}]},
       {title:'Clientes',permissions:[{key:'clientes',label:'Acesso aos clientes',view:true},{key:'clientes.manageFamilies',label:'Editar famílias'},{key:'clientes.deleteFamilies',label:'Excluir famílias'}]},
       {title:'Financeiro',permissions:[{key:'financeiro.income',label:'Registrar entradas'},{key:'financeiro.expense',label:'Registrar despesas'}]},
       {title:'Relatórios',permissions:[{key:'relatorios.export',label:'Exportar relatórios'}]}
@@ -568,7 +581,6 @@
     document.querySelectorAll('[data-storage-item-delete]').forEach(button => button.addEventListener('click', () => {
       if (!canMemberDo('bau.manageItems')) return toast('O Dono não liberou a gestão de itens para este membro.');
       const item = storageCatalog.find(entry => String(entry.id) === String(button.dataset.storageItemDelete)); if (!item) return;
-      if (!window.confirm(`Excluir ${item.name} do catálogo? O histórico já registrado será mantido.`)) return;
       storageCatalog = storageCatalog.filter(entry => String(entry.id) !== String(item.id)); saveLocalState('vertice_storage_catalog',JSON.stringify(storageCatalog)); renderStorageCatalog(); renderStorage(); toast('Item removido do catálogo.');
     }));
   }
@@ -601,7 +613,32 @@
   $('#storageMovementBackdrop').addEventListener('click', event => { if (event.target.id === 'storageMovementBackdrop') closeStorageMovement(); });
   $('#storageItemCards').addEventListener('click', event => { const card = event.target.closest('[data-storage-card]'); if (card) openStorageMovement(card.dataset.storageCard); });
   $('#storageSearch').addEventListener('input', () => renderStorage());
+  $('#storageHistorySearch').addEventListener('input', () => renderStorage());
+  $('#storageHistoryTypeFilter').addEventListener('change', () => renderStorage());
+  $('#storageHistoryDateFilter').addEventListener('change', () => renderStorage());
+  function normalizeStorageSearch(value) { return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLocaleLowerCase('pt-BR').replace(/[^\p{L}\p{N}\s-]/gu,' ').replace(/\s+/g,' ').trim(); }
+  function storageEditDistance(a,b) {
+    let previous = Array.from({length:b.length+1},(_,index)=>index);
+    for (let i=1;i<=a.length;i++) { const current=[i]; for (let j=1;j<=b.length;j++) current[j]=Math.min(current[j-1]+1,previous[j]+1,previous[j-1]+(a[i-1]===b[j-1]?0:1)); previous=current; }
+    return previous[b.length];
+  }
+  function storageSearchScore(name,query) {
+    if (!query) return 0;
+    const normalizedName=normalizeStorageSearch(name), nameWords=normalizedName.split(/[\s-]+/).filter(Boolean), queryWords=query.split(' ').filter(Boolean); let total=0;
+    for (const term of queryWords) {
+      let best=Infinity;
+      for (const word of nameWords) {
+        if (word.includes(term) || term.includes(word)) { best=Math.min(best,0); continue; }
+        const distance=storageEditDistance(term,word), allowed=term.length<=3?1:Math.max(1,Math.ceil(term.length*.3));
+        if (distance<=allowed) best=Math.min(best,distance/Math.max(term.length,word.length));
+      }
+      if (!Number.isFinite(best)) return null;
+      total+=best;
+    }
+    return total/queryWords.length;
+  }
   function renderStorage() {
+    renderStorageBatch();
     const activeMember = getStorageMember();
     $('#storageSessionButton').textContent = activeMember ? `Conectado: ${activeMember.name} · Sair` : 'Entrar como membro';
     const canMoveItems = canMemberDo('bau.move');
@@ -609,8 +646,12 @@
     storageMovements.forEach(move => { const key = move.item.trim().toLocaleLowerCase('pt-BR'); const location = move.location === 'Casa' ? 'Casa' : 'QG'; const row = balances.get(key) || { name: move.item, QG: 0, Casa: 0, latest: move.createdAt }; row[location] += move.type === 'entry' ? Number(move.quantity) : -Number(move.quantity); if (!row.latest || new Date(move.createdAt) > new Date(row.latest)) row.latest = move.createdAt; balances.set(key, row); });
     const inventory = [...balances.values()].map(row => ({...row, quantity:row.QG + row.Casa})).filter(row => row.quantity > 0).sort((a,b) => a.name.localeCompare(b.name,'pt-BR'));
     const stockByName = new Map([...balances.entries()]);
-    const query = $('#storageSearch').value.trim().toLocaleLowerCase('pt-BR');
-    const visibleItems = storageCatalog.filter(item => item.name.toLocaleLowerCase('pt-BR').includes(query));
+    const query = normalizeStorageSearch($('#storageSearch').value);
+    const visibleItems = storageCatalog.map(item => ({item,score:storageSearchScore(item.name,query)})).filter(result => result.score !== null).sort((a,b) => a.score-b.score || a.item.name.localeCompare(b.item.name,'pt-BR')).map(result => result.item);
+    const hasExactMatch = visibleItems.some(item => normalizeStorageSearch(item.name).includes(query));
+    $('#storageSearchCount').textContent = `${visibleItems.length} ${visibleItems.length === 1 ? 'item' : 'itens'}${query && !hasExactMatch && visibleItems.length ? ' próximos' : ''}`;
+    $('#storageSearchEmpty b').textContent = 'Nenhum item parecido encontrado';
+    $('#storageSearchEmpty small').textContent = 'Tente digitar menos letras ou conferir o nome do item.';
     $('#storageItemCards').innerHTML = visibleItems.map(item => { const balance = stockByName.get(item.name.toLocaleLowerCase('pt-BR')) || {QG:0,Casa:0}; const tag = canMoveItems ? 'button' : 'div'; const attrs = canMoveItems ? `type="button" data-storage-card="${safe(item.id)}" aria-label="Movimentar ${safe(item.name)}"` : `aria-label="${safe(item.name)}"`; const action = canMoveItems ? '<span class="storage-card-action" aria-hidden="true">＋</span>' : ''; return `<${tag} class="storage-item-card ${canMoveItems ? '' : 'storage-item-card-static'}" ${attrs}><span class="storage-item-art" aria-hidden="true"><svg viewBox="0 0 160 116" focusable="false"><path d="M34 38 80 16l46 22v48L80 108 34 86Z" fill="currentColor" opacity=".16"/><path d="m34 38 46 23 46-23M80 61v47M34 38v48l46 22 46-22V38" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><path d="m57 27 46 23" fill="none" stroke="currentColor" stroke-width="2" opacity=".6"/></svg><span>📦</span></span><span class="storage-item-card-copy"><b>${safe(item.name)}</b><small class="storage-card-stock"><span>QG: ${Number(balance.QG).toLocaleString('pt-BR')}</span><span>Casa: ${Number(balance.Casa).toLocaleString('pt-BR')}</span></small></span>${action}</${tag}>`; }).join('');
     $('#storageCardsEmpty').hidden = storageCatalog.length > 0;
     $('#storageSearchEmpty').hidden = storageCatalog.length === 0 || visibleItems.length > 0;
@@ -619,9 +660,40 @@
     $('#storageMovementCount').textContent = storageMovements.length.toLocaleString('pt-BR');
     $('#storageInventoryRows').innerHTML = inventory.map(row => `<tr><td>${safe(row.name)}</td><td><b>${Math.max(0,row.QG).toLocaleString('pt-BR')}</b></td><td><b>${Math.max(0,row.Casa).toLocaleString('pt-BR')}</b></td><td><b>${row.quantity.toLocaleString('pt-BR')}</b></td><td>${new Date(row.latest).toLocaleString('pt-BR')}</td></tr>`).join('');
     $('#storageInventoryEmpty').hidden = inventory.length > 0;
-    $('#storageHistoryRows').innerHTML = [...storageMovements].sort((a,b) => new Date(b.createdAt)-new Date(a.createdAt)).map(move => `<tr><td>${new Date(move.createdAt).toLocaleString('pt-BR')}</td><td><span class="storage-movement ${move.type}">${move.type === 'entry' ? 'Entrada' : 'Retirada'}</span></td><td>${safe(move.item)}</td><td>${safe(move.location || 'QG')}</td><td>${Number(move.quantity).toLocaleString('pt-BR')}</td><td>${safe(move.responsible || '—')}${move.memberServerId ? `<small class="storage-member-id">ID ${safe(move.memberServerId)}</small>` : ''}</td><td>${safe(move.note || '—')}</td></tr>`).join('');
-    $('#storageHistoryEmpty').hidden = storageMovements.length > 0;
+    const historyQuery = $('#storageHistorySearch').value.trim().toLocaleLowerCase('pt-BR'), historyType = $('#storageHistoryTypeFilter').value, historyDate = $('#storageHistoryDateFilter').value;
+    const localHistoryDate = move => { const date = new Date(move.createdAt); return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`; };
+    const filteredMovements = storageMovements.filter(move => (!historyType || move.type === historyType) && (!historyDate || localHistoryDate(move) === historyDate) && [move.item,move.location,move.responsible,move.note,move.createdAt ? new Date(move.createdAt).toLocaleDateString('pt-BR') : ''].some(value => String(value || '').toLocaleLowerCase('pt-BR').includes(historyQuery)));
+    $('#storageHistoryCaption').textContent = `${filteredMovements.length} de ${storageMovements.length} movimentações`;
+    $('#storageHistoryRows').innerHTML = [...filteredMovements].sort((a,b) => new Date(b.createdAt)-new Date(a.createdAt)).map(move => `<tr><td>${new Date(move.createdAt).toLocaleString('pt-BR')}</td><td><span class="storage-movement ${move.type}">${move.type === 'entry' ? 'Entrada' : 'Retirada'}</span></td><td>${safe(move.item)}</td><td>${safe(move.location || 'QG')}</td><td>${Number(move.quantity).toLocaleString('pt-BR')}</td><td>${safe(move.responsible || '—')}${move.memberServerId ? `<small class="storage-member-id">ID ${safe(move.memberServerId)}</small>` : ''}</td><td>${safe(move.note || '—')}</td></tr>`).join('');
+    $('#storageHistoryEmpty').hidden = filteredMovements.length > 0;
+    if (storageMovements.length && !filteredMovements.length) { $('#storageHistoryEmpty b').textContent = 'Nenhuma movimentação encontrada'; $('#storageHistoryEmpty small').textContent = 'Ajuste a busca, o tipo ou a data.'; } else { $('#storageHistoryEmpty b').textContent = 'Sem movimentações registradas'; $('#storageHistoryEmpty small').textContent = 'O histórico aparecerá aqui depois da primeira operação.'; }
   }
+  function renderStorageBatch() {
+    const panel = $('#storageBatchPanel'); if (!panel) return;
+    panel.hidden = pendingStorageMovements.length === 0;
+    $('#storageBatchCount').textContent = `${pendingStorageMovements.length} ${pendingStorageMovements.length === 1 ? 'movimentação selecionada' : 'movimentações selecionadas'}`;
+    $('#storageBatchList').innerHTML = pendingStorageMovements.map((move,index) => `<div class="storage-batch-row"><span class="storage-movement ${move.type}">${move.type === 'entry' ? 'Entrada' : 'Retirada'}</span><b>${safe(move.item)}</b><span>${safe(move.location)}</span><strong>${Number(move.quantity).toLocaleString('pt-BR')} un.</strong><button type="button" class="storage-batch-remove" data-storage-batch-remove="${index}" aria-label="Remover ${safe(move.item)} da lista">×</button></div>`).join('');
+    $('#commitStorageBatch').disabled = pendingStorageMovements.length === 0;
+  }
+  $('#storageBatchList').addEventListener('click', event => { const button = event.target.closest('[data-storage-batch-remove]'); if (!button) return; pendingStorageMovements.splice(Number(button.dataset.storageBatchRemove),1); renderStorageBatch(); renderStorage(); });
+  $('#clearStorageBatch').addEventListener('click', () => { pendingStorageMovements = []; renderStorageBatch(); renderStorage(); });
+  $('#commitStorageBatch').addEventListener('click', () => {
+    const activeMember = getStorageMember();
+    if (!activeMember) { requestMemberLogin('bau'); return; }
+    if (!canMemberDo('bau.move')) return toast('O Dono não liberou movimentações do baú para este membro.');
+    if (!pendingStorageMovements.length) return;
+    const balances = new Map(), keyFor = (item,location) => `${String(item).trim().toLocaleLowerCase('pt-BR')}|${location}`;
+    storageMovements.forEach(move => { const location = move.location === 'Casa' ? 'Casa' : 'QG', key = keyFor(move.item,location); balances.set(key,(balances.get(key) || 0) + (move.type === 'entry' ? Number(move.quantity) : -Number(move.quantity))); });
+    for (const move of pendingStorageMovements) {
+      const key = keyFor(move.item,move.location), balance = balances.get(key) || 0;
+      if (move.type === 'withdrawal' && Number(move.quantity) > balance) return toast(`Estoque insuficiente de ${move.item} em ${move.location}. Saldo disponível na lista: ${Math.max(0,balance)}.`);
+      balances.set(key,balance + (move.type === 'entry' ? Number(move.quantity) : -Number(move.quantity)));
+    }
+    const now = Date.now();
+    const committed = pendingStorageMovements.map((move,index) => ({type:move.type,item:move.item,location:move.location,quantity:Number(move.quantity),responsible:activeMember.name,memberServerId:activeMember.server_id,note:'Movimentação em lote',createdAt:new Date(now+index).toISOString()}));
+    storageMovements = [...committed,...storageMovements]; saveLocalState('vertice_storage_movements',JSON.stringify(storageMovements));
+    const count = committed.length; pendingStorageMovements = []; renderStorageBatch(); renderStorageCatalog(); renderStorage(); toast(`${count} ${count === 1 ? 'movimentação registrada' : 'movimentações registradas'} no baú.`);
+  });
   $('#storageMovementForm').addEventListener('submit', e => {
     e.preventDefault();
     const activeMember = getStorageMember();
@@ -629,18 +701,17 @@
     if (!canMemberDo('bau.move')) { closeStorageMovement(); return toast('O Dono não liberou movimentações do baú para este membro.'); }
     const type = $('#storageType').value, location = $('#storageLocation').value, catalogItem = storageCatalog.find(entry => String(entry.id) === $('#storageSelectedItem').value), item = catalogItem?.name || '', quantity = Number($('#storageQuantity').value);
     if (!catalogItem) return toast('Selecione um item do catálogo.');
-    const balance = storageMovements.reduce((sum,move) => move.item.trim().toLocaleLowerCase('pt-BR') === item.toLocaleLowerCase('pt-BR') && (move.location || 'QG') === location ? sum + (move.type === 'entry' ? Number(move.quantity) : -Number(move.quantity)) : sum, 0);
-    if (type === 'withdrawal' && quantity > balance) { toast(`Estoque insuficiente de ${item} em ${location}. Saldo atual: ${Math.max(0,balance)}.`); return; }
-    storageMovements.unshift({ type, item, location, quantity, responsible: activeMember.name, memberServerId: activeMember.server_id, note: '', createdAt: new Date().toISOString() });
-    saveLocalState('vertice_storage_movements', JSON.stringify(storageMovements));
-    closeStorageMovement(); renderStorageCatalog(); renderStorage(); toast(type === 'entry' ? 'Entrada registrada no baú.' : 'Retirada registrada do baú.');
-  });
-  function applySiteSettings() {
+    if (!Number.isInteger(quantity) || quantity < 1) return toast('Informe uma quantidade inteira maior que zero.');
+    const currentBalance = storageMovements.reduce((sum,move) => move.item.trim().toLocaleLowerCase('pt-BR') === item.toLocaleLowerCase('pt-BR') && (move.location || 'QG') === location ? sum + (move.type === 'entry' ? Number(move.quantity) : -Number(move.quantity)) : sum, 0);
+    const queuedBalance = pendingStorageMovements.filter(move => move.item.toLocaleLowerCase('pt-BR') === item.toLocaleLowerCase('pt-BR') && move.location === location).reduce((sum,move) => sum + (move.type === 'entry' ? Number(move.quantity) : -Number(move.quantity)),0), available = currentBalance + queuedBalance;
+    if (type === 'withdrawal' && quantity > available) return toast(`Estoque insuficiente de ${item} em ${location}. Saldo disponível: ${Math.max(0,available)}.`);
+    pendingStorageMovements.push({type,itemId:String(catalogItem.id),item,location,quantity});
+    closeStorageMovement(); renderStorageBatch(); renderStorage(); toast('Movimentação adicionada à lista.');
+  });  function applySiteSettings() {
+    if (String(siteSettings.accent || '').toLowerCase() === '#c8f36a') siteSettings.accent = '#28b8ff';
     document.documentElement.style.setProperty('--green', siteSettings.accent || defaultSiteSettings.accent);
     $('#brandCompanyName').textContent = siteSettings.companyName;
-    $('#brandMark').textContent = (siteSettings.companyName.trim()[0] || 'S').toLocaleUpperCase('pt-BR');
     $('#loginCompanyName').textContent = siteSettings.companyName;
-    $('#loginBrandMark').textContent = (siteSettings.companyName.trim()[0] || 'S').toLocaleUpperCase('pt-BR');
     $('#breadcrumbCompanyName').textContent = siteSettings.companyName;
     $('.server-pill').innerHTML = `<i></i> ${safe(siteSettings.serverName).toLocaleUpperCase('pt-BR')}`;
     const displayName = siteSettings.ownerName;
@@ -704,21 +775,24 @@
   document.body.appendChild(siteEditToolbar);
   $('#finishSiteEditing').addEventListener('click', () => setSiteEditMode(false));
   $('#resetSiteCopy').addEventListener('click', () => {
-    if (!window.confirm('Restaurar todos os textos editados para o conteúdo original?')) return;
     siteCopy = {}; localStorage.removeItem('vertice_site_copy'); window.location.reload();
   });
   function renderEmployees() {
     const query = ($('#employeeSearch').value || '').trim().toLocaleLowerCase('pt-BR');
-    const filtered = employees.filter(x => [x.name,x.server_id,x.role,x.phone].some(v => String(v || '').toLocaleLowerCase('pt-BR').includes(query)));
+    const selectedRole = $('#employeeRoleFilter').value, selectedStatus = $('#employeeStatusFilter').value;
+    $('#employeeRoleFilter').innerHTML = '<option value="">Todos os cargos</option>' + memberRoles.map(role => `<option value="${safe(role)}">${safe(role)}</option>`).join('');
+    $('#employeeRoleFilter').value = memberRoles.includes(selectedRole) ? selectedRole : '';
+    const filtered = employees.filter(x => (!selectedRole || x.role === selectedRole) && (!selectedStatus || (x.status === 'inactive' ? 'inactive' : 'active') === selectedStatus) && [x.name,x.server_id,x.role,x.phone].some(v => String(v || '').toLocaleLowerCase('pt-BR').includes(query)));
     $('#employeeTotal').textContent = employees.length; $('#employeeActive').textContent = employees.filter(x => x.status === 'active').length;
     $('#employeeRoles').textContent = memberRoles.length;
-    $('#employeeListCaption').textContent = `${employees.length} ${employees.length === 1 ? 'membro cadastrado' : 'membros cadastrados'}`;
+    $('#employeeListCaption').textContent = `${filtered.length} de ${employees.length} ${employees.length === 1 ? 'membro' : 'membros'}`;
     $('#employeeRows').innerHTML = filtered.map(x => {
       const initials = String(x.name || '?').split(/\s+/).slice(0,2).map(n => n[0]).join('').toUpperCase();
       const hasAccount = Boolean(memberAccounts[String(x.server_id)]);
       return `<tr><td><span class="employee-person"><i class="avatar avatar-blue">${safe(initials)}</i><b>${safe(x.name)}<small>${safe(x.role)}</small></b></span></td><td>${safe(x.server_id || '—')}</td><td>${safe(x.role || '—')}</td><td>${safe(x.phone || '—')}</td><td><span class="employee-status ${x.status === 'inactive' ? 'inactive' : ''}">${x.status === 'inactive' ? 'Inativo' : 'Ativo'}</span></td><td><button class="employee-access" data-member-account="${safe(x.server_id)}">${hasAccount ? 'Alterar login' : 'Criar login'}</button> <button class="employee-delete" data-delete-employee="${safe(x.id)}" title="Remover membro" aria-label="Remover ${safe(x.name)}">×</button></td></tr>`;
     }).join('');
     $('#employeeEmpty').hidden = filtered.length > 0;
+    if (employees.length && !filtered.length) { $('#employeeEmpty b').textContent = 'Nenhum membro encontrado'; $('#employeeEmpty small').textContent = 'Ajuste a busca ou os filtros de cargo e status.'; } else { $('#employeeEmpty b').textContent = 'Nenhum membro cadastrado'; $('#employeeEmpty small').textContent = 'Adicione o primeiro membro para começar a organizar sua equipe.'; }
     document.querySelectorAll('[data-delete-employee]').forEach(button => button.addEventListener('click', () => deleteEmployee(button.dataset.deleteEmployee)));
     document.querySelectorAll('[data-member-account]').forEach(button => button.addEventListener('click', () => openMemberAccount(button.dataset.memberAccount)));
     renderMemberPermissions();
@@ -732,7 +806,6 @@
     document.querySelectorAll('[data-remove-role]').forEach(button => button.addEventListener('click', () => {
       const role = button.dataset.removeRole;
       if (String(role).toLocaleLowerCase('pt-BR') === 'dono') return toast('O cargo Dono é necessário para controlar o acesso da Gestão do site.');
-      if (!window.confirm(`Excluir o cargo “${role}”? Os membros já cadastrados continuarão com esse cargo registrado.`)) return;
       memberRoles = memberRoles.filter(item => item !== role);
       delete rolePermissions[role]; saveLocalState('vertice_role_permissions',JSON.stringify(rolePermissions));
       saveLocalState('vertice_member_roles', JSON.stringify(memberRoles)); renderRoles(); renderEmployees();
@@ -751,9 +824,9 @@
     renderEmployees();
   }
   $('#employeeSearch').addEventListener('input', renderEmployees);
+  $('#employeeRoleFilter').addEventListener('change', renderEmployees);
+  $('#employeeStatusFilter').addEventListener('change', renderEmployees);
   $('#resetAllData').addEventListener('click', async () => {
-    const accepted = window.confirm('Isso apagará funcionários, movimentações, encomendas, produtos, itens do baú e personalizações salvos neste navegador e no Supabase compartilhado. Deseja continuar?');
-    if (!accepted) return;
     if (config.url && config.key) {
       try {
         await cloudWriteChain;
@@ -807,3 +880,7 @@
     });
   }
 })();
+
+
+
+
