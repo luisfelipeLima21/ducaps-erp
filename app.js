@@ -35,8 +35,16 @@
   let memberAccounts = (() => { try { const data = JSON.parse(localStorage.getItem('vertice_member_accounts') || '{}'); return data && typeof data === 'object' ? data : {}; } catch { return {}; } })();
   let rolePermissions = (() => { try { const data = JSON.parse(localStorage.getItem('vertice_role_permissions') || '{}'); return data && typeof data === 'object' ? data : {}; } catch { return {}; } })();
   let memberPermissions = (() => { try { const data = JSON.parse(localStorage.getItem('vertice_member_permissions') || '{}'); return data && typeof data === 'object' ? data : {}; } catch { return {}; } })();
-  const defaultNavOrder = ['owner','equipe','bau','encomendas','clientes'];
-  const navLabels = {owner:'Gestão do site',equipe:'Cadastro de membros',bau:'Controle de baú',encomendas:'Encomendas',clientes:'Cadastro de clientes'};
+  let personalAreaTabs = (() => { try { const data = JSON.parse(localStorage.getItem('vertice_personal_area_tabs') || '{}'); return data && typeof data === 'object' ? data : {}; } catch { return {}; } })();
+  let personalGoals = (() => { try { const data = JSON.parse(localStorage.getItem('vertice_personal_goals') || '{}'); return data && typeof data === 'object' ? data : {}; } catch { return {}; } })();
+  let goalNotifications = (() => { try { const data = JSON.parse(localStorage.getItem('vertice_goal_notifications') || '[]'); return Array.isArray(data) ? data : []; } catch { return []; } })();
+  let personalMessages = (() => { try { const data = JSON.parse(localStorage.getItem('vertice_personal_messages') || '{}'); return data && typeof data === 'object' ? data : {}; } catch { return {}; } })();
+  let selectedPersonalMemberId = '';
+  let selectedPersonalTabId = 'profile';
+  let editingPersonalTab = false;
+  let editingPersonalGoalId = '';
+  const defaultNavOrder = ['owner','equipe','bau','encomendas','clientes','pessoal'];
+  const navLabels = {owner:'Gestão do site',equipe:'Cadastro de membros',bau:'Controle de baú',encomendas:'Encomendas',clientes:'Cadastro de clientes',pessoal:'Área pessoal'};
   let navOrder = (() => { try { const saved = JSON.parse(localStorage.getItem('vertice_nav_order') || '[]'); return [...new Set([...(Array.isArray(saved) ? saved : []).filter(view => defaultNavOrder.includes(view)),...defaultNavOrder])]; } catch { return [...defaultNavOrder]; } })();
   let accountTargetServerId = null;
   let config = readConfig();
@@ -159,7 +167,7 @@
       // A consulta pode terminar depois que alguém começou a preencher um formulário.
       if (silent && (hasActiveEditing() || localStateRevision !== revisionAtLoadStart)) return;
       if (rows.length) {
-        Object.keys(localStorage).filter(key => key.startsWith('vertice_') && key !== 'vertice_supabase').forEach(key => localStorage.removeItem(key));
+        Object.keys(localStorage).filter(key => key.startsWith('vertice_') && !['vertice_supabase','vertice_saved_profiles'].includes(key)).forEach(key => localStorage.removeItem(key));
         rows.filter(row => String(row.key).startsWith('vertice_') && row.key !== 'vertice_supabase').forEach(row => rawSetLocal(row.key, JSON.stringify(row.value)));
       } else {
         // Migra os dados que já estavam nas tabelas antigas antes de semear o estado compartilhado.
@@ -186,13 +194,13 @@
   function hydrateSharedState() {
     const readArray = (key, fallback = []) => { try { const data = JSON.parse(localStorage.getItem(key) || 'null'); return Array.isArray(data) ? data : fallback; } catch { return fallback; } };
     const readObject = key => { try { const data = JSON.parse(localStorage.getItem(key) || '{}'); return data && typeof data === 'object' ? data : {}; } catch { return {}; } };
-    transactions = readArray('vertice_transactions'); storageMovements = readArray('vertice_storage_movements'); storageCatalog = readArray('vertice_storage_catalog'); orders = readArray('vertice_orders'); clients = readArray('vertice_clients'); products = readArray('vertice_products');
+    transactions = readArray('vertice_transactions'); storageMovements = readArray('vertice_storage_movements'); storageCatalog = readArray('vertice_storage_catalog'); orders = readArray('vertice_orders'); clients = readArray('vertice_clients'); products = readArray('vertice_products'); goalNotifications = readArray('vertice_goal_notifications');
     employees = readArray('vertice_employees', localStorage.getItem('vertice_reset_completed') === 'true' ? [] : demoEmployees);
-    memberAccounts = readObject('vertice_member_accounts'); rolePermissions = readObject('vertice_role_permissions'); memberPermissions = readObject('vertice_member_permissions');
+    memberAccounts = readObject('vertice_member_accounts'); rolePermissions = readObject('vertice_role_permissions'); memberPermissions = readObject('vertice_member_permissions'); personalAreaTabs = readObject('vertice_personal_area_tabs'); personalGoals = readObject('vertice_personal_goals'); personalMessages = readObject('vertice_personal_messages');
     const savedRoles = readArray('vertice_member_roles', defaultRoles); memberRoles = [...new Set(['Dono', ...savedRoles])];
     const savedOrder = readArray('vertice_nav_order', defaultNavOrder); navOrder = [...new Set([...savedOrder.filter(view => defaultNavOrder.includes(view)), ...defaultNavOrder])];
     siteSettings = { ...defaultSiteSettings, ...readObject('vertice_site_settings') }; siteCopy = readObject('vertice_site_copy');
-    applyTheme(); applyNavOrder(); renderNavOrder(); applySiteSettings(); renderRoles(); renderEmployees(); renderStorageCatalog(); renderStorage(); renderProducts(); renderOrders(); renderClients(); renderActivity(); updateMetrics(); prepareSiteCopy(); syncOwnerNavigation();
+    applyTheme(); applyNavOrder(); renderNavOrder(); applySiteSettings(); renderRoles(); renderEmployees(); renderStorageCatalog(); renderStorage(); renderProducts(); renderOrders(); renderClients(); renderPersonalArea(); renderActivity(); updateMetrics(); prepareSiteCopy(); syncOwnerNavigation();
   }
   const modal = $('#modalBackdrop');
   function openTransaction(type) { $('#transactionType').value = type || 'income'; $('#transactionForm').reset(); if (type) $('#transactionType').value = type; modal.classList.add('open'); setTimeout(() => $('#description').focus(), 50); }
@@ -238,12 +246,15 @@
     const csv = '\ufeff' + rows.map(row => row.map(v => `"${String(v ?? '').replace(/"/g,'""')}"`).join(';')).join('\n');
     const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([csv], {type:'text/csv;charset=utf-8'})); link.download = 'vertice-movimentacoes.csv'; link.click(); URL.revokeObjectURL(link.href); toast('Relatório exportado em CSV.');
   });
-  $('#notifications').addEventListener('click', () => toast('Você está em dia com as notificações.'));
+  $('#notifications').addEventListener('click', () => {
+    if (!getStorageMember() || !canReceiveGoalNotifications()) return toast('As notificações de metas ficam disponíveis para Donos e Gerentes.');
+    renderGoalNotifications(); $('#goalNotificationsBackdrop').classList.add('open'); markGoalNotificationsRead();
+  });
   function applyTheme() {
     document.documentElement.dataset.theme = 'dark';
     rawSetLocal('vertice_theme', JSON.stringify('dark'));
   }
-  const titles = {login:'Entrar',inicio:'Visão geral',financeiro:'Financeiro',equipe:'Cadastro de membros',bau:'Controle de baú',encomendas:'Encomendas',clientes:'Cadastro de clientes',operacoes:'Operações',estoque:'Estoque',relatorios:'Relatórios',configuracoes:'Configurações',owner:'Gestão do site'};
+  const titles = {login:'Entrar',inicio:'Visão geral',financeiro:'Financeiro',equipe:'Cadastro de membros',bau:'Controle de baú',encomendas:'Encomendas',clientes:'Cadastro de clientes',pessoal:'Área pessoal',operacoes:'Operações',estoque:'Estoque',relatorios:'Relatórios',configuracoes:'Configurações',owner:'Gestão do site'};
   const orderStatuses = ['Recebida','Em andamento','Pronta','Entregue','Cancelada'];
   function updateOrderPrice() {
     const product = products.find(item => String(item.id) === $('#orderItem').value);
@@ -311,13 +322,15 @@
     renderOrderFamilies();
     const canCreateOrders = canMemberDo('encomendas.create'), canUpdateOrders = canMemberDo('encomendas.updateStatus'), canDeleteOrders = canMemberDo('encomendas.deleteOrders');
     $('#orderForm').hidden = !canCreateOrders;
-    const query = ($('#orderSearch').value || '').trim().toLocaleLowerCase('pt-BR');
+    const query = normalizeSearchText($('#orderSearch').value);
     const statusFilter = $('#orderStatusFilter').value;
-    const filtered = orders.filter(order => (!statusFilter || order.status === statusFilter) && [order.customer,order.familyName,order.familyMember,order.item,order.responsible,order.status].some(value => String(value || '').toLocaleLowerCase('pt-BR').includes(query)));
+    const orderSearchText = order => [order.customer,order.familyName,order.familyMember,order.item,order.responsible,order.status].map(value => String(value || '')).join(' ');
+    const filtered = orders.map(order => ({order,score:fuzzySearchScore(orderSearchText(order),query)})).filter(result => result.score !== null && (!statusFilter || result.order.status === statusFilter)).sort((a,b) => a.score-b.score || new Date(b.order.createdAt)-new Date(a.order.createdAt)).map(result => result.order);
+    const hasApproximateOrders = Boolean(query && filtered.length && !filtered.some(order => normalizeSearchText(orderSearchText(order)).includes(query)));
     $('#orderTotal').textContent = orders.length;
     $('#orderPending').textContent = orders.filter(order => ['Recebida','Em andamento'].includes(order.status)).length;
     $('#orderReady').textContent = orders.filter(order => order.status === 'Pronta').length;
-    $('#orderListCaption').textContent = `${filtered.length} de ${orders.length} ${orders.length === 1 ? 'encomenda' : 'encomendas'}`;
+    $('#orderListCaption').textContent = `${filtered.length} de ${orders.length} ${orders.length === 1 ? 'encomenda' : 'encomendas'}${hasApproximateOrders ? ' · resultados aproximados' : ''}`;
     $('#orderRows').innerHTML = filtered.map(order => `<tr><td><b>${safe(order.familyName || order.customer)}</b>${order.familyMember ? `<small class="order-details">${safe(order.familyMember)}</small>` : order.familyName ? '<small class="order-details">Família</small>' : ''}</td><td><b>${safe(order.item)}</b>${order.details ? `<small class="order-details">${safe(order.details)}</small>` : ''}</td><td>${Number(order.quantity).toLocaleString('pt-BR')}</td><td>${money(order.value)}</td><td>${safe(order.responsible || '—')}</td><td>${order.dueDate ? new Date(`${order.dueDate}T00:00:00`).toLocaleDateString('pt-BR') : '—'}</td><td>${canUpdateOrders ? `<select class="order-status-select status-${order.status.toLocaleLowerCase('pt-BR').replaceAll(' ','-')}" data-order-status="${safe(order.id)}" aria-label="Status da encomenda de ${safe(order.familyName || order.customer)}">${orderStatuses.map(status => `<option value="${status}" ${status === order.status ? 'selected' : ''}>${status}</option>`).join('')}</select>` : `<span class="order-status-select status-${order.status.toLocaleLowerCase('pt-BR').replaceAll(' ','-')}">${safe(order.status)}</span>`}</td><td>${canDeleteOrders ? `<button class="employee-delete" data-delete-order="${safe(order.id)}" title="Excluir encomenda" aria-label="Excluir encomenda de ${safe(order.familyName || order.customer)}">×</button>` : ''}</td></tr>`).join('');
     $('#orderEmpty').hidden = filtered.length > 0;
     if (orders.length && !filtered.length) { $('#orderEmpty b').textContent = 'Nenhuma encomenda encontrada'; $('#orderEmpty small').textContent = 'Ajuste a busca ou o filtro de status.'; } else { $('#orderEmpty b').textContent = 'Nenhuma encomenda cadastrada'; $('#orderEmpty small').textContent = 'Cadastre o primeiro pedido para acompanhar sua entrega.'; }
@@ -364,10 +377,12 @@
   function renderClients() {
     const canManageFamilies = canMemberDo('clientes.manageFamilies'), canDeleteFamilies = canMemberDo('clientes.deleteFamilies');
     $('#clientFormPanel').hidden = !canManageFamilies; $('#newClient').hidden = !canManageFamilies;
-    const query = ($('#clientSearch').value || '').trim().toLocaleLowerCase('pt-BR');
-    const filtered = clients.filter(client => [client.familyName,...(client.members || []).flatMap(member => [member.name,member.role,member.phone])].some(value => String(value || '').toLocaleLowerCase('pt-BR').includes(query)));
+    const query = normalizeSearchText($('#clientSearch').value);
+    const familySearchText = client => [client.familyName,...(client.members || []).flatMap(member => [member.name,member.role,member.phone])].map(value => String(value || '')).join(' ');
+    const filtered = clients.map(client => ({client,score:fuzzySearchScore(familySearchText(client),query)})).filter(result => result.score !== null).sort((a,b) => a.score-b.score || (a.client.familyName || '').localeCompare(b.client.familyName || '','pt-BR')).map(result => result.client);
+    const hasApproximateFamilies = Boolean(query && filtered.length && !filtered.some(client => normalizeSearchText(familySearchText(client)).includes(query)));
     $('#clientTotal').textContent = clients.length.toLocaleString('pt-BR');
-    $('#clientListCaption').textContent = `${clients.length} ${clients.length === 1 ? 'família cadastrada' : 'famílias cadastradas'}`;
+    $('#clientListCaption').textContent = query ? `${filtered.length} de ${clients.length} famílias${hasApproximateFamilies ? ' · resultados aproximados' : ''}` : `${clients.length} ${clients.length === 1 ? 'família cadastrada' : 'famílias cadastradas'}`;
     $('#clientRows').innerHTML = filtered.map(client => { const members = client.members || []; const familyName = client.familyName || client.name; const memberCards = members.map(member => { const initials = (member.name || 'Membro').trim().split(/\s+/).slice(0,2).map(part => part[0] || '').join('').toLocaleUpperCase('pt-BR'); const phone = String(member.phone || ''); const phoneLink = phone.replace(/[^\d+]/g,''); return `<div class="family-member-card"><span class="family-member-avatar">${safe(initials || 'M')}</span><div class="family-member-info"><b>${safe(member.name || 'Membro sem nome')}</b><span class="family-member-role">${safe(member.role || 'Cargo não informado')}</span>${phone ? `<a class="family-member-contact" href="tel:${safe(phoneLink)}">☎ ${safe(phone)}</a>` : '<small class="family-member-no-contact">Telefone não informado</small>'}</div></div>`; }).join(''); return `<article class="family-card"><header class="family-card-header"><span class="family-card-icon">♧</span><div class="family-card-title"><h3>${safe(familyName)}</h3><small>${members.length} ${members.length === 1 ? 'membro' : 'membros'}</small></div><div class="family-card-actions">${canManageFamilies ? `<button class="employee-access" type="button" data-edit-client="${safe(client.id)}" title="Editar família">Editar</button>` : ''}${canDeleteFamilies ? `<button class="employee-delete" type="button" data-delete-client="${safe(client.id)}" title="Excluir família" aria-label="Excluir ${safe(familyName)}">×</button>` : ''}</div></header><div class="family-member-list">${memberCards || '<small class="family-member-no-contact">Nenhum membro cadastrado</small>'}</div></article>`; }).join('');
     $('#clientEmpty').hidden = filtered.length > 0;
     $('#clientEmpty b').textContent = clients.length && query ? 'Nenhuma família encontrada' : 'Nenhuma família cadastrada';
@@ -404,47 +419,137 @@
     saveLocalState('vertice_clients',JSON.stringify(clients)); resetClientForm(); renderClients(); toast(wasEditing ? 'Família atualizada.' : 'Família cadastrada.');
   });
   const storageSessionKey = 'vertice_storage_member_session';
+  const idleActivityKey = 'vertice_member_last_activity';
+  const memberIdleLimitMs = 7 * 24 * 60 * 60 * 1000;
+  const savedProfilesKey = 'vertice_saved_profiles';
   let requestedProtectedView = 'login';
   const getStorageMember = () => employees.find(member => String(member.server_id) === sessionStorage.getItem(storageSessionKey) && member.status !== 'inactive') || null;
+  const getSessionMember = () => employees.find(member => String(member.server_id) === sessionStorage.getItem(storageSessionKey)) || null;
+  const isSoleActiveOwner = member => String(member?.role || '').trim().toLocaleLowerCase('pt-BR') === 'dono' && !employees.some(item => String(item.server_id) !== String(member.server_id) && item.status !== 'inactive' && String(item.role || '').trim().toLocaleLowerCase('pt-BR') === 'dono' && memberAccounts[String(item.server_id)]);
+  const canManageEmployeeStatus = () => ['dono','gerente'].includes(String(getStorageMember()?.role || '').trim().toLocaleLowerCase('pt-BR')) || !hasDonoAccount();
+  let memberIdleTimer = 0, lastIdleActivityWrite = 0;
+  function deactivateIdleMember() {
+    const member = getStorageMember(); if (!member || String(member.role || '').toLocaleLowerCase('pt-BR') === 'dono' && isSoleActiveOwner(member)) return;
+    member.status = 'inactive'; saveLocalState('vertice_employees',JSON.stringify(employees));
+    sessionStorage.removeItem(storageSessionKey); sessionStorage.removeItem(idleActivityKey);
+    requestedProtectedView = 'login'; $('#loginNotice').textContent = 'Seu perfil foi marcado como inativo após 7 dias sem movimentação. Peça a um Gerente ou Dono para reativá-lo.';
+    renderEmployees(); syncOwnerNavigation(); showView('login'); toast('Perfil marcado como inativo por falta de atividade.');
+  }
+  function startMemberInactivityMonitor() {
+    clearTimeout(memberIdleTimer);
+    const member = getStorageMember(); if (!member || isSoleActiveOwner(member)) return;
+    const now = Date.now(); let last = Number(sessionStorage.getItem(idleActivityKey));
+    if (!Number.isFinite(last) || last <= 0) { last = now; sessionStorage.setItem(idleActivityKey,String(last)); }
+    const remaining = memberIdleLimitMs - (now - last);
+    if (remaining <= 0) { deactivateIdleMember(); return; }
+    memberIdleTimer = setTimeout(deactivateIdleMember,remaining);
+  }
+  function recordMemberActivity() {
+    if (!getStorageMember() || isSoleActiveOwner(getStorageMember())) return;
+    const now = Date.now(); if (now - lastIdleActivityWrite < 1000) return;
+    lastIdleActivityWrite = now; sessionStorage.setItem(idleActivityKey,String(now)); startMemberInactivityMonitor();
+  }
+  const getSavedProfileIds = () => {
+    try { const parsed = JSON.parse(localStorage.getItem(savedProfilesKey) || '[]'); return Array.isArray(parsed) ? [...new Set(parsed.map(String))].filter(id => employees.some(member => String(member.server_id) === id && member.status !== 'inactive')) : []; }
+    catch { return []; }
+  };
+  const saveProfileId = id => { const ids = getSavedProfileIds(); if (!ids.includes(String(id))) ids.push(String(id)); rawSetLocal(savedProfilesKey,JSON.stringify(ids)); };
+  const forgetProfileId = id => rawSetLocal(savedProfilesKey,JSON.stringify(getSavedProfileIds().filter(savedId => savedId !== String(id))));
+  function renderSavedProfiles() {
+    const activeId = sessionStorage.getItem(storageSessionKey);
+    const ids = getSavedProfileIds();
+    rawSetLocal(savedProfilesKey,JSON.stringify(ids));
+    $('#savedProfilesList').innerHTML = ids.length ? ids.map(id => {
+      const member = employees.find(item => String(item.server_id) === id);
+      return `<div class="saved-profile-row"><div class="saved-profile-avatar">${safe((member.name || '?').trim().slice(0,1).toLocaleUpperCase('pt-BR'))}</div><div class="saved-profile-copy"><b>${safe(member.name)}</b><small>${safe(member.role || 'Membro')} · ID ${safe(member.server_id)}</small></div>${id === activeId ? '<span class="saved-profile-current">Em uso</span>' : `<button class="button button-quiet saved-profile-switch" type="button" data-switch-profile="${safe(id)}">Alternar</button>`}<button class="saved-profile-forget" type="button" data-forget-profile="${safe(id)}" aria-label="Remover perfil salvo de ${safe(member.name)}" title="Remover perfil">×</button></div>`;
+    }).join('') : '<div class="saved-profiles-empty">Nenhum perfil salvo neste dispositivo.</div>';
+  }
   const hasDonoAccount = () => Object.values(memberAccounts).some(account => employees.some(member => String(member.server_id) === String(account.serverId) && member.status !== 'inactive' && String(member.role).toLocaleLowerCase('pt-BR') === 'dono'));
   const canManagePermissions = () => !hasDonoAccount() || String(getStorageMember()?.role || '').toLocaleLowerCase('pt-BR') === 'dono';
   const hasRolePermission = (member, view) => String(member?.role || '').toLocaleLowerCase('pt-BR') === 'dono' || rolePermissions[member?.role]?.[view] === true;
   const hasMemberPermission = (member, view) => { if (String(member?.role || '').toLocaleLowerCase('pt-BR') === 'dono') return true; const overrides = memberPermissions[String(member?.server_id)] || {}; return Object.prototype.hasOwnProperty.call(overrides,view) ? overrides[view] !== false : hasRolePermission(member,view); };
   const legacyActionAliases = {'encomendas.updateStatus':'encomendas.manageOrders','encomendas.deleteOrders':'encomendas.manageOrders','encomendas.deleteProducts':'encomendas.manageProducts'};
   const hasMemberAction = (member, action) => { if ((!member && !hasDonoAccount()) || String(member?.role || '').toLocaleLowerCase('pt-BR') === 'dono') return true; const permissions = memberPermissions[String(member?.server_id)] || {}; if (Object.prototype.hasOwnProperty.call(permissions,action)) return permissions[action] === true; const legacy = legacyActionAliases[action]; return Boolean(legacy && permissions[legacy] === true); };
+  const canManagePersonalAreas = () => ['dono','gerente'].includes(String(getStorageMember()?.role || '').trim().toLocaleLowerCase('pt-BR'));
+  const canDefinePersonalGoals = () => String(getStorageMember()?.role || '').trim().toLocaleLowerCase('pt-BR') === 'dono';
+  const canReceiveGoalNotifications = () => ['dono','gerente'].includes(String(getStorageMember()?.role || '').trim().toLocaleLowerCase('pt-BR'));
+  const goalNotificationReadKey = () => `ducaps_goal_notifications_read_${String(getStorageMember()?.server_id || 'signed-out')}`;
+  const readGoalNotificationIds = () => { try { const data = JSON.parse(localStorage.getItem(goalNotificationReadKey()) || '[]'); return Array.isArray(data) ? data.map(String) : []; } catch { return []; } };
+  function renderGoalNotifications() {
+    const allowed = canReceiveGoalNotifications(), readIds = readGoalNotificationIds();
+    const visible = allowed ? goalNotifications.filter(item => item.type === 'goal_reached').slice().sort((a,b) => new Date(b.createdAt)-new Date(a.createdAt)) : [];
+    const unreadCount = visible.filter(item => !readIds.includes(String(item.id))).length;
+    $('#notificationDot').hidden = unreadCount === 0;
+    $('#notifications').setAttribute('aria-label',unreadCount ? `Notificações, ${unreadCount} não lidas` : 'Notificações');
+    $('#goalNotificationsList').innerHTML = visible.length ? visible.slice(0,50).map(item => `<article class="goal-notification-card ${readIds.includes(String(item.id)) ? '' : 'unread'}"><span class="goal-notification-icon">✓</span><div><b>Meta atingida: ${safe(item.goalTitle)}</b><p>${safe(item.memberName)} completou a meta de depósito de dinheiro sujo.</p><small>${item.createdAt ? new Date(item.createdAt).toLocaleString('pt-BR') : ''}</small></div></article>`).join('') : '<div class="goal-notifications-empty">Nenhuma meta concluída ainda.</div>';
+    $('#markGoalNotificationsRead').hidden = unreadCount === 0;
+  }
+  function markGoalNotificationsRead() {
+    if (!canReceiveGoalNotifications()) return;
+    rawSetLocal(goalNotificationReadKey(),JSON.stringify(goalNotifications.map(item => String(item.id)))); renderGoalNotifications();
+  }
+  $('#closeGoalNotifications').addEventListener('click',() => $('#goalNotificationsBackdrop').classList.remove('open'));
+  $('#closeGoalNotificationsAction').addEventListener('click',() => $('#goalNotificationsBackdrop').classList.remove('open'));
+  $('#goalNotificationsBackdrop').addEventListener('click',event => { if (event.target.id === 'goalNotificationsBackdrop') $('#goalNotificationsBackdrop').classList.remove('open'); });
+  $('#markGoalNotificationsRead').addEventListener('click',markGoalNotificationsRead);
+  function notifyCompletedDirtyMoneyGoals(movements) {
+    const depositedMemberIds = [...new Set(movements.filter(move => move.type === 'entry' && !move.transferId && normalizeSearchText(move.item) === 'dinheiro sujo' && move.memberServerId).map(move => String(move.memberServerId)))];
+    if (!depositedMemberIds.length) return;
+    let changed = false;
+    depositedMemberIds.forEach(serverId => {
+      const member = employees.find(item => String(item.server_id) === serverId);
+      if (!member) return;
+      (Array.isArray(personalGoals[serverId]) ? personalGoals[serverId] : []).filter(goal => goal.type === 'dirty_money').forEach(goal => {
+        const notificationId = `goal-reached:${serverId}:${goal.id}`;
+        const current = storageMovements.filter(move => String(move.memberServerId || '') === serverId && move.type === 'entry' && !move.transferId && normalizeSearchText(move.item) === 'dinheiro sujo' && (!goal.createdAt || new Date(move.createdAt) >= new Date(goal.createdAt))).reduce((sum,move) => sum + Math.max(0,Number(move.quantity) || 0),0);
+        const target = Math.max(1,Number(goal.targetQuantity) || 1);
+        if (current >= target && !goalNotifications.some(item => String(item.id) === notificationId)) {
+          goalNotifications.unshift({id:notificationId,type:'goal_reached',memberServerId:serverId,memberName:member.name || 'Membro',goalId:String(goal.id),goalTitle:goal.title || 'Meta de depósito',createdAt:new Date().toISOString()}); changed = true;
+        }
+      });
+    });
+    if (changed) { saveLocalState('vertice_goal_notifications',JSON.stringify(goalNotifications)); renderGoalNotifications(); if (canReceiveGoalNotifications()) toast('Uma meta foi atingida.'); }
+  }
   const canMemberDo = action => {
     const member = getStorageMember();
     const area = action.startsWith('bau.') ? 'bau' : action.startsWith('encomendas.') ? 'encomendas' : action.startsWith('clientes.') ? 'clientes' : '';
     return (!area || hasMemberPermission(member,area)) && hasMemberAction(member,action);
   };
-  const memberLandingView = member => String(member?.role || '').toLocaleLowerCase('pt-BR') === 'dono' ? 'owner' : navOrder.find(view => ['bau','encomendas','clientes'].includes(view) && hasMemberPermission(member,view)) || (['financeiro.income','financeiro.expense','relatorios.export'].some(action => memberPermissions[String(member?.server_id)]?.[action] === true) ? 'inicio' : '');
+  const memberLandingView = member => String(member?.role || '').toLocaleLowerCase('pt-BR') === 'dono' ? 'owner' : navOrder.find(view => ['bau','encomendas','clientes'].includes(view) && hasMemberPermission(member,view)) || (['financeiro.income','financeiro.expense','relatorios.export'].some(action => memberPermissions[String(member?.server_id)]?.[action] === true) ? 'inicio' : 'pessoal');
   const syncOwnerNavigation = () => {
     const member = getStorageMember();
+    const storedSessionId = sessionStorage.getItem(storageSessionKey);
+    if (storedSessionId && !member) { sessionStorage.removeItem(storageSessionKey); sessionStorage.removeItem(idleActivityKey); requestedProtectedView = 'login'; $('#loginNotice').textContent = 'Seu perfil está inativo. Peça a um Gerente ou Dono para reativá-lo.'; showView('login'); }
     const allowed = !hasDonoAccount() || String(member?.role || '').toLocaleLowerCase('pt-BR') === 'dono';
-    document.querySelectorAll('.nav-item[data-view="owner"],#employeeNavItem').forEach(item => { item.hidden = !allowed; });
+    document.querySelector('.nav-item[data-view="owner"]').hidden = !allowed;
+    $('#employeeNavItem').hidden = !canManageEmployeeStatus();
     document.querySelector('.nav-item[data-view="bau"]').hidden = Boolean(member) && !hasMemberPermission(member,'bau');
     document.querySelector('.nav-item[data-view="encomendas"]').hidden = Boolean(member) && !hasMemberPermission(member,'encomendas');
     document.querySelector('.nav-item[data-view="clientes"]').hidden = Boolean(member) && !hasMemberPermission(member,'clientes');
-    $('#memberSessionButton').textContent = member ? `Sair · ${member.name}` : 'Entrar';
+    $('#personalNavItem').hidden = !member;
+    $('#memberSessionButton').textContent = member ? `Perfis ▾` : getSavedProfileIds().length ? 'Perfis salvos' : 'Entrar';
     $('#setupOwnerAccess').hidden = hasDonoAccount();
     $('#newAction').hidden = !canMemberDo('financeiro.income') && !canMemberDo('financeiro.expense');
     document.querySelectorAll('[data-action="income"]').forEach(button => { button.hidden = !canMemberDo('financeiro.income'); });
     document.querySelectorAll('[data-action="expense"]').forEach(button => { button.hidden = !canMemberDo('financeiro.expense'); });
     document.querySelectorAll('[data-action="employee"]').forEach(button => { button.hidden = !allowed; });
     $('#exportBtn').hidden = !canMemberDo('relatorios.export');
+    renderPersonalArea();
     renderMemberPermissions();
+    renderGoalNotifications();
+    renderEmployees();
+    startMemberInactivityMonitor();
     const activeView = document.querySelector('.nav-item.active')?.dataset.view;
     if (activeView && ['bau','encomendas','clientes'].includes(activeView) && member && !hasMemberPermission(member,activeView)) {
       const destination = memberLandingView(member);
       if (destination && destination !== activeView) showView(destination);
       else { sessionStorage.removeItem(storageSessionKey); showView('login'); }
     }
-    if (!allowed && ['owner','equipe'].includes(activeView)) { setSiteEditMode(false); showView('login'); }
+    if (!allowed && activeView === 'owner' || !canManageEmployeeStatus() && activeView === 'equipe') { setSiteEditMode(false); showView('login'); }
   };
   function requestMemberLogin(view) {
     requestedProtectedView = view;
-    const ownerAccess = view === 'owner' || view === 'equipe';
-    $('#loginNotice').textContent = ownerAccess ? 'Entre com a conta do Dono para abrir esta área.' : 'Entre para acessar as áreas liberadas para sua conta.';
+    $('#loginNotice').textContent = view === 'owner' ? 'Entre com a conta do Dono para abrir esta área.' : view === 'equipe' ? 'Entre com uma conta de Gerente ou Dono para gerenciar os status dos membros.' : 'Entre para acessar as áreas liberadas para sua conta.';
     $('#loginScreenForm').reset();
     showView('login');
     $('#loginScreenName').focus();
@@ -483,6 +588,152 @@
     }));
   }
   $('#memberPermissionsMemberSelect').addEventListener('change', event => { selectedPermissionMemberId = event.target.value; renderMemberPermissions(); });
+  function renderPersonalArea() {
+    const activeMember = getStorageMember();
+    if (!activeMember || !$('#personalView')) return;
+    const manager = canManagePersonalAreas(), activeEmployees = employees.filter(member => member.status !== 'inactive');
+    if (!manager || !activeEmployees.some(member => String(member.server_id) === String(selectedPersonalMemberId))) selectedPersonalMemberId = String(activeMember.server_id);
+    const person = manager ? activeEmployees.find(member => String(member.server_id) === String(selectedPersonalMemberId)) || activeMember : activeMember;
+    const serverId = String(person.server_id), tabs = Array.isArray(personalAreaTabs[serverId]) ? personalAreaTabs[serverId] : [], goals = Array.isArray(personalGoals[serverId]) ? personalGoals[serverId] : [], messages = Array.isArray(personalMessages[serverId]) ? personalMessages[serverId] : [];
+    const dirtyMoneyProgress = goal => storageMovements.filter(move => String(move.memberServerId || '') === serverId && move.type === 'entry' && !move.transferId && normalizeSearchText(move.item) === 'dinheiro sujo' && (!goal.createdAt || new Date(move.createdAt) >= new Date(goal.createdAt))).reduce((sum,move) => sum + Math.max(0,Number(move.quantity) || 0),0);
+    const isGoalComplete = goal => goal.type === 'dirty_money' ? dirtyMoneyProgress(goal) >= Math.max(1,Number(goal.targetQuantity) || 1) : goal.status === 'concluida';
+    if (!['profile','history','goals','contact'].includes(selectedPersonalTabId) && !tabs.some(tab => String(tab.id) === String(selectedPersonalTabId))) selectedPersonalTabId = 'profile';
+    $('#personalMemberPanel').hidden = !manager;
+    $('#personalView').classList.toggle('is-member-view',!manager);
+    $('#personalMemberWelcome').hidden = manager;
+    $('#personalWelcomeName').textContent = (activeMember.name || 'membro').trim().split(/\s+/)[0];
+    $('#personalWelcomeAvatar').textContent = (activeMember.name || 'M').trim().split(/\s+/).slice(0,2).map(part => part[0] || '').join('').toLocaleUpperCase('pt-BR');
+    $('#personalWelcomeGoals').textContent = goals.length;
+    $('#personalWelcomeCompleted').textContent = goals.filter(isGoalComplete).length;
+    $('#personalIntro').textContent = manager ? 'Selecione um membro para visualizar metas e conversar diretamente com ele.' : 'Acompanhe suas metas e converse diretamente com a gestão.';
+    $('#personalAccessBadge').textContent = manager ? 'GESTÃO DE ÁREAS' : 'ÁREA PESSOAL';
+    const memberQuery = normalizeSearchText($('#personalMemberSearch')?.value || '');
+    const visibleEmployees = activeEmployees.filter(member => !memberQuery || normalizeSearchText(`${member.name} ${member.role} ${member.server_id}`).includes(memberQuery));
+    $('#personalMemberTabs').innerHTML = manager ? (visibleEmployees.map(member => `<button type="button" role="tab" aria-selected="${String(member.server_id) === serverId}" class="personal-member-tab ${String(member.server_id) === serverId ? 'active' : ''}" data-personal-member="${safe(member.server_id)}"><span class="personal-channel-mark">#</span><span><b>${safe(member.name)}</b><small>${safe(member.role || 'Membro')}</small></span></button>`).join('') || '<p class="personal-empty-note">Nenhum membro encontrado.</p>') : '';
+    $('#personalMemberName').textContent = person.name || 'Membro';
+    $('#personalMemberCaption').textContent = `${person.role || 'Cargo não informado'} · ID ${person.server_id || '—'}${manager && String(person.server_id) !== String(activeMember.server_id) ? ' · Visualização da gestão' : ''}`;
+    $('#personalMemberStatus').textContent = person.status === 'inactive' ? 'INATIVO' : 'ATIVO';
+    $('#personalProfileDetails').innerHTML = `<div class="personal-profile-facts"><div><small>Cargo</small><b>${safe(person.role || 'Não informado')}</b></div><div><small>ID no servidor</small><b>${safe(person.server_id || '—')}</b></div><div><small>Telefone</small><b>${safe(person.phone || 'Não informado')}</b></div><div><small>Status</small><b>${person.status === 'inactive' ? 'Inativo' : 'Ativo'}</b></div></div>`;
+    const recent = storageMovements.filter(move => String(move.memberServerId || '') === serverId).slice(0,100);
+    $('#personalHistory').innerHTML = `<h3>Histórico do baú</h3><p class="personal-history-caption">Movimentações registradas com o acesso deste membro.</p>${recent.length ? `<div class="personal-recent-list">${recent.map(move => `<div class="personal-recent-row"><span class="storage-movement ${move.transferId ? 'transfer' : move.type}">${move.transferId ? 'Transferência' : move.type === 'entry' ? 'Entrada' : 'Retirada'}</span><b>${safe(move.item)}</b><span>${safe(move.location || 'QG')} · ${Number(move.quantity).toLocaleString('pt-BR')} un.</span><small>${move.createdAt ? new Date(move.createdAt).toLocaleString('pt-BR') : ''}</small></div>`).join('')}</div>` : '<p class="personal-empty-note">Nenhuma movimentação registrada com este acesso.</p>'}`;
+    $('#personalWorkspaceTitle').textContent = `Espaço de ${person.name || 'membro'}`;
+    $('#personalGoalCount').textContent = `${goals.length} ${goals.length === 1 ? 'meta' : 'metas'}`;
+    $('#personalGoalForm').hidden = !canDefinePersonalGoals();
+    $('#personalGoalTargetField').hidden = $('#personalGoalType').value !== 'dirty_money';
+    $('#personalGoalList').innerHTML = goals.length ? goals.map(goal => {
+      const isMoneyGoal = goal.type === 'dirty_money';
+      const goalActions = canDefinePersonalGoals() ? `<div class="personal-goal-actions"><button class="personal-goal-edit" type="button" data-edit-goal="${safe(goal.id)}">Editar</button><button class="personal-goal-delete" type="button" data-delete-goal="${safe(goal.id)}" aria-label="Remover meta">×</button></div>` : '';
+      if (isMoneyGoal) {
+        const target = Math.max(1,Number(goal.targetQuantity) || 1), current = dirtyMoneyProgress(goal), percent = Math.min(100,Math.round(current / target * 100)), reached = current >= target;
+        return `<article class="personal-goal-card personal-money-goal"><svg class="personal-goal-ring" viewBox="0 0 52 52" role="progressbar" aria-label="Progresso da meta ${safe(goal.title)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><circle class="personal-goal-ring-track" cx="26" cy="26" r="21" pathLength="100"></circle><circle class="personal-goal-ring-fill" cx="26" cy="26" r="21" pathLength="100" transform="rotate(-90 26 26)" stroke-dasharray="100" stroke-dashoffset="${100-percent}" style="--goal-ring-offset:${100-percent}"></circle><text x="26" y="29">${percent}%</text></svg><div class="personal-goal-copy"><b>${safe(goal.title)}</b><p>${safe(goal.description || 'Deposite Dinheiro sujo no baú para avançar nesta meta.')}</p>${goal.dueDate ? `<small>Prazo: ${new Date(`${goal.dueDate}T12:00:00`).toLocaleDateString('pt-BR')}</small>` : ''}<div class="personal-goal-progress" role="progressbar" aria-label="Quantidade depositada" aria-valuemin="0" aria-valuemax="${target}" aria-valuenow="${Math.min(current,target)}"><span style="width:${percent}%"></span></div><small>${current.toLocaleString('pt-BR')} / ${target.toLocaleString('pt-BR')} unidades depositadas</small></div><span class="personal-money-goal-state ${reached ? 'reached' : ''}">${reached ? 'Meta atingida' : 'Em andamento'}</span>${goalActions}</article>`;
+      }
+      return `<article class="personal-goal-card"><div class="personal-goal-copy"><b>${safe(goal.title)}</b>${goal.description ? `<p>${safe(goal.description)}</p>` : ''}${goal.dueDate ? `<small>Prazo: ${new Date(`${goal.dueDate}T12:00:00`).toLocaleDateString('pt-BR')}</small>` : ''}</div><select class="personal-goal-status status-${safe(goal.status || 'pendente')}" data-goal-status="${safe(goal.id)}" aria-label="Andamento da meta ${safe(goal.title)}"><option value="pendente" ${goal.status === 'pendente' || !goal.status ? 'selected' : ''}>Pendente</option><option value="andamento" ${goal.status === 'andamento' ? 'selected' : ''}>Em andamento</option><option value="concluida" ${goal.status === 'concluida' ? 'selected' : ''}>Concluída</option></select>${goalActions}</article>`;
+    }).join('') : '<p class="personal-empty-note">Nenhuma meta cadastrada para este membro.</p>';
+    $('#personalChatTitle').textContent = `Conversa com ${person.name || 'membro'}`;
+    $('#personalChatAvatar').textContent = (person.name || 'M').trim().split(/\s+/).slice(0,2).map(part => part[0] || '').join('').toLocaleUpperCase('pt-BR');
+    $('#personalMessages').innerHTML = messages.length ? messages.map(message => { const own = String(message.senderServerId) === String(activeMember.server_id); return `<article class="personal-message ${own ? 'own-message' : ''}"><div><b>${safe(message.senderName || 'Membro')}</b><small>${message.createdAt ? new Date(message.createdAt).toLocaleString('pt-BR') : ''}</small></div><p>${safe(message.text).replace(/\n/g,'<br>')}</p></article>`; }).join('') : '<p class="personal-empty-note">Comece uma conversa direta com este membro.</p>';
+    $('#personalMessages').scrollTop = $('#personalMessages').scrollHeight;
+    $('#personalContentTabs').innerHTML = `<button type="button" role="tab" aria-selected="${selectedPersonalTabId === 'profile'}" class="personal-content-tab ${selectedPersonalTabId === 'profile' ? 'active' : ''}" data-personal-tab="profile">Perfil</button><button type="button" role="tab" aria-selected="${selectedPersonalTabId === 'goals'}" class="personal-content-tab ${selectedPersonalTabId === 'goals' ? 'active' : ''}" data-personal-tab="goals">Metas <span class="personal-tab-count">${goals.length}</span></button><button type="button" role="tab" aria-selected="${selectedPersonalTabId === 'contact'}" class="personal-content-tab ${selectedPersonalTabId === 'contact' ? 'active' : ''}" data-personal-tab="contact">Contato direto${messages.length ? ` <span class="personal-tab-count">${messages.length}</span>` : ''}</button><button type="button" role="tab" aria-selected="${selectedPersonalTabId === 'history'}" class="personal-content-tab ${selectedPersonalTabId === 'history' ? 'active' : ''}" data-personal-tab="history">Histórico do baú</button>${tabs.map(tab => `<button type="button" role="tab" aria-selected="${String(tab.id) === String(selectedPersonalTabId)}" class="personal-content-tab ${String(tab.id) === String(selectedPersonalTabId) ? 'active' : ''}" data-personal-tab="${safe(tab.id)}">${safe(tab.title)}</button>`).join('')}`;
+    const selectedTab = tabs.find(tab => String(tab.id) === String(selectedPersonalTabId));
+    $('#personalProfileDetails').hidden = selectedPersonalTabId !== 'profile';
+    $('#personalProfilePanel').hidden = selectedPersonalTabId !== 'profile';
+    $('#personalHistory').hidden = selectedPersonalTabId !== 'history';
+    $('#personalGoals').hidden = selectedPersonalTabId !== 'goals';
+    $('#personalChat').hidden = selectedPersonalTabId !== 'contact';
+    $('#personalTabContent').hidden = !selectedTab;
+    $('#personalTabContent').innerHTML = selectedTab ? `<h3>${safe(selectedTab.title)}</h3><div class="personal-tab-copy">${safe(selectedTab.content || 'Esta aba ainda não tem conteúdo.').replace(/\n/g,'<br>')}</div>` : '';
+    $('#personalTabActions').hidden = !manager || !selectedTab;
+  }
+  $('#personalMemberSearch').addEventListener('input', renderPersonalArea);
+  $('#personalWelcomeGoalsButton').addEventListener('click', () => { selectedPersonalTabId = 'goals'; renderPersonalArea(); });
+  $('#personalWelcomeContactButton').addEventListener('click', () => { selectedPersonalTabId = 'contact'; renderPersonalArea(); });
+  $('#personalMemberTabs').addEventListener('click', event => { const button = event.target.closest('[data-personal-member]'); if (!button || !canManagePersonalAreas()) return; if (String(selectedPersonalMemberId) !== String(button.dataset.personalMember)) resetPersonalGoalEditor(); selectedPersonalMemberId = button.dataset.personalMember; selectedPersonalTabId = 'profile'; renderPersonalArea(); });
+  $('#personalContentTabs').addEventListener('click', event => { const button = event.target.closest('[data-personal-tab]'); if (!button) return; selectedPersonalTabId = button.dataset.personalTab; renderPersonalArea(); });
+  $('#personalGoalType').addEventListener('change', event => {
+    const moneyGoal = event.target.value === 'dirty_money'; $('#personalGoalTargetField').hidden = !moneyGoal;
+    if (moneyGoal && !$('#personalGoalTitle').value.trim()) $('#personalGoalTitle').value = 'Depositar dinheiro sujo';
+  });
+  const personalGoalCancelButton = document.createElement('button');
+  personalGoalCancelButton.type = 'button'; personalGoalCancelButton.id = 'cancelPersonalGoalEdit'; personalGoalCancelButton.className = 'button button-quiet personal-goal-cancel'; personalGoalCancelButton.textContent = 'Cancelar edição'; personalGoalCancelButton.hidden = true;
+  const personalGoalFormActions = document.createElement('div');
+  personalGoalFormActions.className = 'personal-goal-form-actions';
+  const personalGoalSubmitButton = $('#personalGoalForm button[type="submit"]');
+  personalGoalFormActions.append(personalGoalCancelButton,personalGoalSubmitButton);
+  $('#personalGoalForm').append(personalGoalFormActions);
+  function resetPersonalGoalEditor() {
+    editingPersonalGoalId = ''; $('#personalGoalForm').reset(); $('#personalGoalTargetField').hidden = true;
+    $('#personalGoalForm button[type="submit"]').innerHTML = '＋ Adicionar meta'; personalGoalCancelButton.hidden = true;
+    $('#personalGoalForm').classList.remove('is-editing-goal');
+  }
+  personalGoalCancelButton.addEventListener('click',() => resetPersonalGoalEditor());
+  $('#personalGoalForm').addEventListener('submit', event => {
+    event.preventDefault(); if (!canDefinePersonalGoals()) return toast('Somente o Dono pode cadastrar metas.');
+    const serverId = String(selectedPersonalMemberId), goals = Array.isArray(personalGoals[serverId]) ? [...personalGoals[serverId]] : [], title = $('#personalGoalTitle').value.trim(), type = $('#personalGoalType').value, targetQuantity = Number($('#personalGoalTarget').value);
+    if (!title) return;
+    if (type === 'dirty_money' && (!Number.isInteger(targetQuantity) || targetQuantity < 1)) return toast('Informe a quantidade total de Dinheiro sujo para a meta.');
+    const now = new Date().toISOString(), existingIndex = goals.findIndex(goal => String(goal.id) === String(editingPersonalGoalId));
+    if (existingIndex >= 0) {
+      const oldGoal = goals[existingIndex];
+      goals[existingIndex] = {...oldGoal,type,title,description:$('#personalGoalDescription').value.trim(),dueDate:$('#personalGoalDueDate').value,targetQuantity:type === 'dirty_money' ? targetQuantity : null,createdAt:type === 'dirty_money' && oldGoal.type !== 'dirty_money' ? now : oldGoal.createdAt || now};
+    } else goals.unshift({id:`goal-${Date.now()}`,type,title,description:$('#personalGoalDescription').value.trim(),dueDate:$('#personalGoalDueDate').value,targetQuantity:type === 'dirty_money' ? targetQuantity : null,status:'pendente',createdAt:now});
+    personalGoals[serverId] = goals; saveLocalState('vertice_personal_goals',JSON.stringify(personalGoals)); resetPersonalGoalEditor(); renderPersonalArea(); toast(existingIndex >= 0 ? 'Meta atualizada.' : 'Meta adicionada ao membro.');
+  });
+  $('#personalGoalList').addEventListener('change', event => {
+    const select = event.target.closest('[data-goal-status]'); if (!select) return;
+    const serverId = String(selectedPersonalMemberId), goals = Array.isArray(personalGoals[serverId]) ? personalGoals[serverId] : [], goal = goals.find(item => String(item.id) === String(select.dataset.goalStatus)); if (!goal) return;
+    goal.status = select.value; saveLocalState('vertice_personal_goals',JSON.stringify(personalGoals)); renderPersonalArea();
+  });
+  $('#personalGoalList').addEventListener('click', event => {
+    const editButton = event.target.closest('[data-edit-goal]'), deleteButton = event.target.closest('[data-delete-goal]');
+    if ((!editButton && !deleteButton) || !canDefinePersonalGoals()) return;
+    const serverId = String(selectedPersonalMemberId), goals = Array.isArray(personalGoals[serverId]) ? [...personalGoals[serverId]] : [];
+    if (editButton) {
+      const goal = goals.find(item => String(item.id) === String(editButton.dataset.editGoal)); if (!goal) return;
+      editingPersonalGoalId = String(goal.id); $('#personalGoalType').value = goal.type === 'dirty_money' ? 'dirty_money' : 'manual';
+      $('#personalGoalTitle').value = goal.title || ''; $('#personalGoalDescription').value = goal.description || ''; $('#personalGoalDueDate').value = goal.dueDate || ''; $('#personalGoalTarget').value = goal.targetQuantity || '';
+      $('#personalGoalTargetField').hidden = goal.type !== 'dirty_money'; $('#personalGoalForm button[type="submit"]').innerHTML = 'Salvar alterações'; personalGoalCancelButton.hidden = false; $('#personalGoalForm').classList.add('is-editing-goal'); $('#personalGoalTitle').focus(); $('#personalGoalForm').scrollIntoView({behavior:'smooth',block:'center'}); return;
+    }
+    personalGoals[serverId] = goals.filter(goal => String(goal.id) !== String(deleteButton.dataset.deleteGoal)); if (!personalGoals[serverId].length) delete personalGoals[serverId];
+    if (String(editingPersonalGoalId) === String(deleteButton.dataset.deleteGoal)) resetPersonalGoalEditor();
+    saveLocalState('vertice_personal_goals',JSON.stringify(personalGoals)); renderPersonalArea(); toast('Meta removida.');
+  });
+  $('#personalMessageForm').addEventListener('submit', event => {
+    event.preventDefault(); const activeMember = getStorageMember(), serverId = String(selectedPersonalMemberId), text = $('#personalMessageInput').value.trim(); if (!activeMember || !text) return;
+    const messages = Array.isArray(personalMessages[serverId]) ? [...personalMessages[serverId]] : [];
+    messages.push({id:`message-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,senderName:activeMember.name,senderServerId:String(activeMember.server_id),text,createdAt:new Date().toISOString()});
+    personalMessages[serverId] = messages.slice(-300); saveLocalState('vertice_personal_messages',JSON.stringify(personalMessages)); $('#personalMessageInput').value = ''; renderPersonalArea(); $('#personalMessageInput').focus();
+  });
+  function openPersonalTabEditor(tab = null) {
+    if (!canManagePersonalAreas()) return toast('Somente Dono e Gerente podem editar as abas pessoais.');
+    const person = employees.find(member => String(member.server_id) === String(selectedPersonalMemberId)); if (!person) return;
+    editingPersonalTab = Boolean(tab);
+    $('#personalTabModalTitle').textContent = editingPersonalTab ? 'Editar aba pessoal' : 'Nova aba pessoal';
+    $('#personalTabModalMember').textContent = `Área de ${person.name} · ID ${person.server_id}`;
+    $('#personalTabMemberId').value = String(person.server_id); $('#personalTabId').value = tab?.id || '';
+    $('#personalTabTitle').value = tab?.title || ''; $('#personalTabText').value = tab?.content || '';
+    $('#personalTabBackdrop').classList.add('open'); $('#personalTabTitle').focus();
+  }
+  const closePersonalTabEditor = () => $('#personalTabBackdrop').classList.remove('open');
+  $('#editPersonalTab').addEventListener('click', () => { const tab = (personalAreaTabs[selectedPersonalMemberId] || []).find(item => String(item.id) === String(selectedPersonalTabId)); if (tab) openPersonalTabEditor(tab); });
+  $('#deletePersonalTab').addEventListener('click', () => {
+    if (!canManagePersonalAreas()) return toast('Somente Dono e Gerente podem remover abas pessoais.');
+    const serverId = String(selectedPersonalMemberId), tabs = Array.isArray(personalAreaTabs[serverId]) ? personalAreaTabs[serverId] : [];
+    personalAreaTabs[serverId] = tabs.filter(tab => String(tab.id) !== String(selectedPersonalTabId)); if (!personalAreaTabs[serverId].length) delete personalAreaTabs[serverId];
+    saveLocalState('vertice_personal_area_tabs',JSON.stringify(personalAreaTabs)); selectedPersonalTabId = 'profile'; renderPersonalArea(); toast('Aba removida da área pessoal.');
+  });
+  $('#closePersonalTab').addEventListener('click', closePersonalTabEditor);
+  $('#cancelPersonalTab').addEventListener('click', closePersonalTabEditor);
+  $('#personalTabBackdrop').addEventListener('click', event => { if (event.target.id === 'personalTabBackdrop') closePersonalTabEditor(); });
+  $('#personalTabForm').addEventListener('submit', event => {
+    event.preventDefault(); if (!canManagePersonalAreas()) return toast('Somente Dono e Gerente podem editar as abas pessoais.');
+    const serverId = String($('#personalTabMemberId').value), title = $('#personalTabTitle').value.trim(), content = $('#personalTabText').value.trim(), tabId = $('#personalTabId').value || `personal-tab-${Date.now()}`;
+    const tabs = Array.isArray(personalAreaTabs[serverId]) ? [...personalAreaTabs[serverId]] : [];
+    if (tabs.some(tab => String(tab.id) !== String(tabId) && normalizeSearchText(tab.title) === normalizeSearchText(title))) return toast('Já existe uma aba com esse nome para este membro.');
+    const updated = {id:tabId,title,content}; const existingIndex = tabs.findIndex(tab => String(tab.id) === String(tabId));
+    if (existingIndex >= 0) tabs[existingIndex] = updated; else tabs.push(updated);
+    personalAreaTabs[serverId] = tabs; saveLocalState('vertice_personal_area_tabs',JSON.stringify(personalAreaTabs));
+    selectedPersonalMemberId = serverId; selectedPersonalTabId = tabId; closePersonalTabEditor(); renderPersonalArea(); toast(editingPersonalTab ? 'Aba pessoal atualizada.' : 'Aba pessoal criada.');
+  });
   function applyNavOrder() {
     const nav = $('.main-nav');
     const items = new Map([...nav.querySelectorAll('.nav-item[data-view]')].map(item => [item.dataset.view,item]));
@@ -500,8 +751,36 @@
     saveLocalState('vertice_nav_order',JSON.stringify(navOrder)); applyNavOrder(); renderNavOrder();
   });
   $('#memberSessionButton').addEventListener('click', () => {
-    if (getStorageMember()) { sessionStorage.removeItem(storageSessionKey); syncOwnerNavigation(); requestedProtectedView = 'login'; $('#loginNotice').textContent = 'Entre para acessar as áreas liberadas para sua conta.'; showView('login'); toast('Sessão encerrada.'); }
+    if (getStorageMember() || getSavedProfileIds().length) { renderSavedProfiles(); $('#savedProfilesBackdrop').classList.add('open'); }
     else { requestedProtectedView = 'login'; $('#loginNotice').textContent = 'Entre para acessar as áreas liberadas para sua conta.'; showView('login'); $('#loginScreenName').focus(); }
+  });
+  $('#closeSavedProfiles').addEventListener('click', () => $('#savedProfilesBackdrop').classList.remove('open'));
+  $('#savedProfilesBackdrop').addEventListener('click', event => { if (event.target.id === 'savedProfilesBackdrop') $('#savedProfilesBackdrop').classList.remove('open'); });
+  $('#addSavedProfile').addEventListener('click', () => {
+    requestedProtectedView = 'switchProfile';
+    $('#savedProfilesBackdrop').classList.remove('open');
+    $('#memberLoginCopy').textContent = 'Entre uma vez para adicionar este perfil à lista deste dispositivo.';
+    $('#memberLoginForm').reset();
+    $('#memberLoginRememberProfile').checked = true;
+    $('#memberLoginBackdrop').classList.add('open');
+    $('#memberLoginName').focus();
+  });
+  $('#logoutCurrentProfile').addEventListener('click', () => {
+    sessionStorage.removeItem(storageSessionKey); $('#savedProfilesBackdrop').classList.remove('open'); syncOwnerNavigation();
+    requestedProtectedView = 'login'; $('#loginNotice').textContent = 'Entre para acessar as áreas liberadas para sua conta.'; showView('login'); toast('Perfil encerrado.');
+  });
+  $('#savedProfilesList').addEventListener('click', event => {
+    const switchButton = event.target.closest('[data-switch-profile]');
+    const forgetButton = event.target.closest('[data-forget-profile]');
+    if (forgetButton) { forgetProfileId(forgetButton.dataset.forgetProfile); renderSavedProfiles(); syncOwnerNavigation(); return; }
+    if (!switchButton) return;
+    const member = employees.find(item => String(item.server_id) === switchButton.dataset.switchProfile && item.status !== 'inactive');
+    if (!member) { forgetProfileId(switchButton.dataset.switchProfile); renderSavedProfiles(); return; }
+    sessionStorage.setItem(storageSessionKey,String(member.server_id));
+    sessionStorage.setItem(idleActivityKey,String(Date.now()));
+    $('#savedProfilesBackdrop').classList.remove('open'); syncOwnerNavigation();
+    const destination = memberLandingView(member) || 'pessoal';
+    showView(destination); toast(`Perfil alterado para ${member.name}.`);
   });
   const hashMemberPassword = async (password, salt) => {
     if (!crypto?.subtle) throw new Error('Este navegador não oferece suporte ao login local. Abra o site em um navegador atualizado.');
@@ -546,6 +825,7 @@
     event.preventDefault();
     $('#memberLoginName').value = $('#loginScreenName').value;
     $('#memberLoginPassword').value = $('#loginScreenPassword').value;
+    $('#memberLoginRememberProfile').checked = $('#loginScreenRememberProfile').checked;
     $('#memberLoginForm').requestSubmit();
   });
   $('#setupOwnerAccess').addEventListener('click', () => showView('equipe'));
@@ -557,15 +837,18 @@
     try {
       if (await hashMemberPassword(password,match.salt) !== match.passwordHash) return toast('Login ou senha incorretos.');
       const member = employees.find(x => String(x.server_id) === String(match.serverId) && x.status !== 'inactive');
-      if (!member) return toast('Este membro não está ativo no cadastro.');
-      if (['owner','equipe'].includes(requestedProtectedView) && String(member.role).toLocaleLowerCase('pt-BR') !== 'dono') return toast('A Gestão do site e o cadastro de membros são exclusivos do cargo Dono.');
+      if (!member) { $('#loginNotice').textContent = 'Este perfil está inativo. Peça a um Gerente ou Dono para reativá-lo antes de entrar.'; return toast('Acesso bloqueado: o perfil está inativo.'); }
+      if (requestedProtectedView === 'owner' && String(member.role).toLocaleLowerCase('pt-BR') !== 'dono') return toast('A Gestão do site é exclusiva do cargo Dono.');
+      if (requestedProtectedView === 'equipe' && hasDonoAccount() && !['dono','gerente'].includes(String(member.role).trim().toLocaleLowerCase('pt-BR'))) return toast('Somente Gerentes e Donos podem reativar membros.');
       if (['bau','encomendas','clientes'].includes(requestedProtectedView) && !hasMemberPermission(member,requestedProtectedView)) return toast('Seu acesso não está liberado para esta área.');
       let destination = requestedProtectedView;
-      if (destination === 'login') {
+      if (destination === 'login' || destination === 'switchProfile') {
         destination = memberLandingView(member);
         if (!destination) { $('#loginNotice').textContent = 'Sua conta ainda não tem uma área liberada. Peça ao Dono para configurar suas permissões.'; return; }
       }
-      sessionStorage.setItem(storageSessionKey,String(member.server_id)); $('#memberLoginBackdrop').classList.remove('open'); $('#memberLoginForm').reset(); $('#loginScreenForm').reset(); syncOwnerNavigation(); showView(destination); toast(`Olá, ${member.name}.`);
+      sessionStorage.setItem(storageSessionKey,String(member.server_id)); sessionStorage.setItem(idleActivityKey,String(Date.now()));
+      if ($('#memberLoginRememberProfile').checked) saveProfileId(member.server_id); else forgetProfileId(member.server_id);
+      $('#memberLoginBackdrop').classList.remove('open'); $('#memberLoginForm').reset(); $('#loginScreenForm').reset(); $('#memberLoginCopy').textContent = 'Use o login e a senha vinculados ao seu cadastro de membro.'; syncOwnerNavigation(); showView(destination); toast(`Olá, ${member.name}.`);
     } catch (error) { toast(error.message || 'Não foi possível validar o login.'); }
   });
   $('#storageSessionButton').addEventListener('click', () => {
@@ -575,15 +858,51 @@
   $('#ownerLogoutButton').addEventListener('click', () => { sessionStorage.removeItem(storageSessionKey); syncOwnerNavigation(); requestedProtectedView = 'login'; $('#loginNotice').textContent = 'Entre para acessar as áreas liberadas para sua conta.'; showView('login'); toast('Sessão do Dono encerrada.'); });
   function renderStorageCatalog() {
     const canCreateItems = canMemberDo('bau.createItems'), canManageItems = canMemberDo('bau.manageItems');
+    const query = normalizeSearchText($('#storageCatalogSearch').value);
+    const catalogMatches = storageCatalog.map(item => ({item,score:fuzzySearchScore(item.name,query)})).filter(result => result.score !== null).sort((a,b) => a.score-b.score || a.item.name.localeCompare(b.item.name,'pt-BR'));
+    const visibleCatalog = catalogMatches.map(result => result.item), hasExactCatalogMatch = visibleCatalog.some(item => normalizeSearchText(item.name).includes(query));
+    $('#storageCatalogCount').textContent = `${visibleCatalog.length} de ${storageCatalog.length} itens${query && visibleCatalog.length && !hasExactCatalogMatch ? ' · resultados próximos' : ''}`;
     $('#storageItemForm').hidden = !canCreateItems;
-    $('#storageCatalogRows').innerHTML = storageCatalog.map(item => `<tr><td>${safe(item.name)}</td><td>${safe(item.location || 'QG')}</td><td>${canManageItems ? `<button type="button" class="employee-delete" data-storage-item-delete="${safe(item.id)}" title="Excluir item" aria-label="Excluir ${safe(item.name)}">×</button>` : ''}</td></tr>`).join('');
+    $('#storageCatalogRows').innerHTML = visibleCatalog.map(item => { const image = storageItemImage(item.name); return `<tr><td class="storage-item-name-cell">${image ? `<img class="storage-item-thumb" src="${image}" alt="" loading="lazy">` : ''}<span>${safe(item.name)}</span></td><td>${safe(item.location || 'QG')}</td><td>${canManageItems ? `<div class="storage-catalog-actions"><button type="button" class="employee-access" data-storage-item-edit="${safe(item.id)}" title="Editar ${safe(item.name)}">Editar</button><button type="button" class="employee-delete" data-storage-item-delete="${safe(item.id)}" title="Excluir item" aria-label="Excluir ${safe(item.name)}">×</button></div>` : ''}</td></tr>`; }).join('');
     $('#storageCatalogEmpty').hidden = storageCatalog.length > 0;
+    $('#storageCatalogSearchEmpty').hidden = storageCatalog.length === 0 || !query || visibleCatalog.length > 0;
+    document.querySelectorAll('[data-storage-item-edit]').forEach(button => button.addEventListener('click', () => {
+      if (!canMemberDo('bau.manageItems')) return toast('O Dono não liberou a gestão de itens para este membro.');
+      const item = storageCatalog.find(entry => String(entry.id) === String(button.dataset.storageItemEdit)); if (!item) return;
+      $('#storageEditItemId').value = String(item.id); $('#storageEditItemName').value = item.name; $('#storageEditItemLocation').value = item.location || 'QG'; $('#storageEditItemBackdrop').classList.add('open'); $('#storageEditItemName').focus();
+    }));
     document.querySelectorAll('[data-storage-item-delete]').forEach(button => button.addEventListener('click', () => {
       if (!canMemberDo('bau.manageItems')) return toast('O Dono não liberou a gestão de itens para este membro.');
       const item = storageCatalog.find(entry => String(entry.id) === String(button.dataset.storageItemDelete)); if (!item) return;
-      storageCatalog = storageCatalog.filter(entry => String(entry.id) !== String(item.id)); saveLocalState('vertice_storage_catalog',JSON.stringify(storageCatalog)); renderStorageCatalog(); renderStorage(); toast('Item removido do catálogo.');
+      const itemKey = normalizeSearchText(item.name), relatedProductIds = new Set(products.filter(product => normalizeSearchText(product.name) === itemKey).map(product => String(product.id)));
+      storageCatalog = storageCatalog.filter(entry => String(entry.id) !== String(item.id));
+      storageMovements = storageMovements.filter(move => normalizeSearchText(move.item) !== itemKey);
+      products = products.filter(product => normalizeSearchText(product.name) !== itemKey);
+      orders = orders.filter(order => normalizeSearchText(order.item) !== itemKey && !relatedProductIds.has(String(order.productId)));
+      pendingStorageMovements = pendingStorageMovements.filter(move => normalizeSearchText(move.item) !== itemKey && String(move.itemId || '') !== String(item.id));
+      saveLocalState('vertice_storage_catalog',JSON.stringify(storageCatalog)); saveLocalState('vertice_storage_movements',JSON.stringify(storageMovements)); saveLocalState('vertice_products',JSON.stringify(products)); saveLocalState('vertice_orders',JSON.stringify(orders));
+      renderStorageCatalog(); renderStorage(); renderProducts(); renderOrders(); renderStorageBatch(); toast(`“${item.name}” e os registros vinculados foram removidos das listas.`);
     }));
   }
+  const closeStorageEditItem = () => $('#storageEditItemBackdrop').classList.remove('open');
+  $('#closeStorageEditItem').addEventListener('click', closeStorageEditItem);
+  $('#cancelStorageEditItem').addEventListener('click', closeStorageEditItem);
+  $('#storageEditItemBackdrop').addEventListener('click', event => { if (event.target.id === 'storageEditItemBackdrop') closeStorageEditItem(); });
+  $('#storageEditItemForm').addEventListener('submit', event => {
+    event.preventDefault(); if (!canMemberDo('bau.manageItems')) return toast('O Dono não liberou a gestão de itens para este membro.');
+    const item = storageCatalog.find(entry => String(entry.id) === String($('#storageEditItemId').value)); if (!item) return closeStorageEditItem();
+    const oldName = item.name, oldKey = normalizeSearchText(oldName), name = $('#storageEditItemName').value.trim(), key = normalizeSearchText(name), location = $('#storageEditItemLocation').value;
+    if (!name) return toast('Informe o nome do item.');
+    if (storageCatalog.some(entry => String(entry.id) !== String(item.id) && normalizeSearchText(entry.name) === key)) return toast('Já existe um item cadastrado com esse nome.');
+    const relatedProductIds = new Set(products.filter(product => normalizeSearchText(product.name) === oldKey).map(product => String(product.id)));
+    item.name = name; item.location = location;
+    storageMovements.forEach(move => { if (normalizeSearchText(move.item) === oldKey) move.item = name; });
+    pendingStorageMovements.forEach(move => { if (normalizeSearchText(move.item) === oldKey || String(move.itemId || '') === String(item.id)) { move.item = name; move.itemId = String(item.id); } });
+    products.forEach(product => { if (normalizeSearchText(product.name) === oldKey) product.name = name; });
+    orders.forEach(order => { if (normalizeSearchText(order.item) === oldKey || relatedProductIds.has(String(order.productId))) order.item = name; });
+    saveLocalState('vertice_storage_catalog',JSON.stringify(storageCatalog)); saveLocalState('vertice_storage_movements',JSON.stringify(storageMovements)); saveLocalState('vertice_products',JSON.stringify(products)); saveLocalState('vertice_orders',JSON.stringify(orders));
+    closeStorageEditItem(); renderStorageCatalog(); renderStorage(); renderProducts(); renderOrders(); renderStorageBatch(); toast(`“${oldName}” atualizado em todas as listas vinculadas.`);
+  });
   $('#storageItemForm').addEventListener('submit', event => {
     event.preventDefault();
     if (!canMemberDo('bau.createItems')) return toast('O Dono não liberou o cadastro de itens para este membro.');
@@ -604,10 +923,19 @@
     $('#storageType').value = 'entry';
     $('#storageLocation').value = item.location || 'QG';
     $('#storageQuantity').value = '1';
+    updateStorageMovementAction();
     $('#storageMovementBackdrop').classList.add('open');
     $('#storageQuantity').focus();
   }
-  function closeStorageMovement() { $('#storageMovementBackdrop').classList.remove('open'); $('#storageMovementForm').reset(); $('#storageQuantity').value = '1'; }
+  function updateStorageMovementAction() {
+    const isTransfer = $('#storageType').value === 'transfer', source = $('#storageLocation').value, destination = source === 'Casa' ? 'QG' : 'Casa';
+    $('#storageLocationCaption').textContent = isTransfer ? 'Origem' : 'Local';
+    $('#storageTransferDestination').hidden = !isTransfer;
+    $('#storageTransferDestination').textContent = isTransfer ? `Destino da transferência: ${destination}` : '';
+  }
+  function closeStorageMovement() { $('#storageMovementBackdrop').classList.remove('open'); $('#storageMovementForm').reset(); $('#storageQuantity').value = '1'; updateStorageMovementAction(); }
+  $('#storageType').addEventListener('change', updateStorageMovementAction);
+  $('#storageLocation').addEventListener('change', updateStorageMovementAction);
   $('#closeStorageMovement').addEventListener('click', closeStorageMovement);
   $('#cancelStorageMovement').addEventListener('click', closeStorageMovement);
   $('#storageMovementBackdrop').addEventListener('click', event => { if (event.target.id === 'storageMovementBackdrop') closeStorageMovement(); });
@@ -616,20 +944,29 @@
   $('#storageHistorySearch').addEventListener('input', () => renderStorage());
   $('#storageHistoryTypeFilter').addEventListener('change', () => renderStorage());
   $('#storageHistoryDateFilter').addEventListener('change', () => renderStorage());
-  function normalizeStorageSearch(value) { return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLocaleLowerCase('pt-BR').replace(/[^\p{L}\p{N}\s-]/gu,' ').replace(/\s+/g,' ').trim(); }
-  function storageEditDistance(a,b) {
+  $('#storageCatalogSearch').addEventListener('input', renderStorageCatalog);
+  $('#storageInventorySearch').addEventListener('input', () => renderStorage());
+  function normalizeSearchText(value) { return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLocaleLowerCase('pt-BR').replace(/[^\p{L}\p{N}\s-]/gu,' ').replace(/\s+/g,' ').trim(); }
+  const storageItemImages = {
+    'municao submetralhadora':'assets/item-upload-01.png','hacking':'assets/item-upload-02.png','explosivo c4':'assets/item-upload-03.png','lockpick':'assets/item-upload-04.png','chip ilegal':'assets/item-upload-05.png',
+    'attachs m4':'assets/item-upload-06.png','attachs sig sauer':'assets/item-upload-07.png','attachs uzi':'assets/item-upload-08.png','attachs tec9':'assets/item-upload-09.png','attachs five':'assets/item-upload-10.png','attachs g36c mk2':'assets/item-attachs-g36c-mk2.png','colete':'assets/item-colete.png','attachs m16':'assets/item-upload-13.png','attachs ap pistol':'assets/item-upload-14.png',
+    'g36c mk2':'assets/item-upload-15.png','mtar-21':'assets/item-upload-16.png','micro uzi':'assets/item-upload-17.png','mp5':'assets/item-upload-18.png','five seven':'assets/item-upload-19.png','algemas':'assets/item-upload-20.png','adrenalina':'assets/item-upload-21.png','polvora':'assets/item-upload-22.png',
+    'dinheiro sujo':'assets/item-dinheiro-sujo.png','glock 19':'assets/item-glock-19.png','barra macica':'assets/item-barra-macica.png','esmerilhadeira':'assets/item-esmerilhadeira.png','latao':'assets/item-latao.png'
+  };
+  function storageItemImage(name) { const normalized = normalizeSearchText(name); if (storageItemImages[normalized]) return storageItemImages[normalized]; if (/\b(cocaina|cocaine)\b/.test(normalized)) return 'assets/item-cocaina.png'; if (/\b(metanfetamina|metanfet|meth)\b/.test(normalized)) return 'assets/item-metanfetamina.png'; if (/\b(maconha|cannabis|weed)\b/.test(normalized)) return 'assets/item-maconha.png'; return ''; }
+  function editDistance(a,b) {
     let previous = Array.from({length:b.length+1},(_,index)=>index);
     for (let i=1;i<=a.length;i++) { const current=[i]; for (let j=1;j<=b.length;j++) current[j]=Math.min(current[j-1]+1,previous[j]+1,previous[j-1]+(a[i-1]===b[j-1]?0:1)); previous=current; }
     return previous[b.length];
   }
-  function storageSearchScore(name,query) {
+  function fuzzySearchScore(name,query) {
     if (!query) return 0;
-    const normalizedName=normalizeStorageSearch(name), nameWords=normalizedName.split(/[\s-]+/).filter(Boolean), queryWords=query.split(' ').filter(Boolean); let total=0;
+    const normalizedName=normalizeSearchText(name), nameWords=normalizedName.split(/[\s-]+/).filter(Boolean), queryWords=query.split(' ').filter(Boolean); let total=0;
     for (const term of queryWords) {
       let best=Infinity;
       for (const word of nameWords) {
         if (word.includes(term) || term.includes(word)) { best=Math.min(best,0); continue; }
-        const distance=storageEditDistance(term,word), allowed=term.length<=3?1:Math.max(1,Math.ceil(term.length*.3));
+        const distance=editDistance(term,word), allowed=term.length<=3?1:Math.max(1,Math.ceil(term.length*.3));
         if (distance<=allowed) best=Math.min(best,distance/Math.max(term.length,word.length));
       }
       if (!Number.isFinite(best)) return null;
@@ -646,25 +983,32 @@
     storageMovements.forEach(move => { const key = move.item.trim().toLocaleLowerCase('pt-BR'); const location = move.location === 'Casa' ? 'Casa' : 'QG'; const row = balances.get(key) || { name: move.item, QG: 0, Casa: 0, latest: move.createdAt }; row[location] += move.type === 'entry' ? Number(move.quantity) : -Number(move.quantity); if (!row.latest || new Date(move.createdAt) > new Date(row.latest)) row.latest = move.createdAt; balances.set(key, row); });
     const inventory = [...balances.values()].map(row => ({...row, quantity:row.QG + row.Casa})).filter(row => row.quantity > 0).sort((a,b) => a.name.localeCompare(b.name,'pt-BR'));
     const stockByName = new Map([...balances.entries()]);
-    const query = normalizeStorageSearch($('#storageSearch').value);
-    const visibleItems = storageCatalog.map(item => ({item,score:storageSearchScore(item.name,query)})).filter(result => result.score !== null).sort((a,b) => a.score-b.score || a.item.name.localeCompare(b.item.name,'pt-BR')).map(result => result.item);
-    const hasExactMatch = visibleItems.some(item => normalizeStorageSearch(item.name).includes(query));
+    const query = normalizeSearchText($('#storageSearch').value);
+    const visibleItems = storageCatalog.map(item => ({item,score:fuzzySearchScore(item.name,query)})).filter(result => result.score !== null).sort((a,b) => a.score-b.score || a.item.name.localeCompare(b.item.name,'pt-BR')).map(result => result.item);
+    const hasExactMatch = visibleItems.some(item => normalizeSearchText(item.name).includes(query));
     $('#storageSearchCount').textContent = `${visibleItems.length} ${visibleItems.length === 1 ? 'item' : 'itens'}${query && !hasExactMatch && visibleItems.length ? ' próximos' : ''}`;
     $('#storageSearchEmpty b').textContent = 'Nenhum item parecido encontrado';
     $('#storageSearchEmpty small').textContent = 'Tente digitar menos letras ou conferir o nome do item.';
-    $('#storageItemCards').innerHTML = visibleItems.map(item => { const balance = stockByName.get(item.name.toLocaleLowerCase('pt-BR')) || {QG:0,Casa:0}; const tag = canMoveItems ? 'button' : 'div'; const attrs = canMoveItems ? `type="button" data-storage-card="${safe(item.id)}" aria-label="Movimentar ${safe(item.name)}"` : `aria-label="${safe(item.name)}"`; const action = canMoveItems ? '<span class="storage-card-action" aria-hidden="true">＋</span>' : ''; return `<${tag} class="storage-item-card ${canMoveItems ? '' : 'storage-item-card-static'}" ${attrs}><span class="storage-item-art" aria-hidden="true"><svg viewBox="0 0 160 116" focusable="false"><path d="M34 38 80 16l46 22v48L80 108 34 86Z" fill="currentColor" opacity=".16"/><path d="m34 38 46 23 46-23M80 61v47M34 38v48l46 22 46-22V38" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><path d="m57 27 46 23" fill="none" stroke="currentColor" stroke-width="2" opacity=".6"/></svg><span>📦</span></span><span class="storage-item-card-copy"><b>${safe(item.name)}</b><small class="storage-card-stock"><span>QG: ${Number(balance.QG).toLocaleString('pt-BR')}</span><span>Casa: ${Number(balance.Casa).toLocaleString('pt-BR')}</span></small></span>${action}</${tag}>`; }).join('');
+    $('#storageItemCards').innerHTML = visibleItems.map(item => { const balance = stockByName.get(item.name.toLocaleLowerCase('pt-BR')) || {QG:0,Casa:0}; const tag = canMoveItems ? 'button' : 'div'; const attrs = canMoveItems ? `type="button" data-storage-card="${safe(item.id)}" aria-label="Movimentar ${safe(item.name)}"` : `aria-label="${safe(item.name)}"`; const action = canMoveItems ? '<span class="storage-card-action" aria-hidden="true">＋</span>' : ''; const image = storageItemImage(item.name); const art = image ? `<img class="storage-item-photo" src="${image}" alt="${safe(item.name)}" loading="lazy">` : '<span class="storage-item-generic-icon" aria-hidden="true">📦</span>'; return `<${tag} class="storage-item-card ${image ? 'storage-item-card-illustrated' : ''} ${canMoveItems ? '' : 'storage-item-card-static'}" ${attrs}><span class="storage-item-art" aria-hidden="true">${art}</span><span class="storage-item-card-copy"><b>${safe(item.name)}</b><small class="storage-card-stock"><span>QG: ${Number(balance.QG).toLocaleString('pt-BR')}</span><span>Casa: ${Number(balance.Casa).toLocaleString('pt-BR')}</span></small></span>${action}</${tag}>`; }).join('');
     $('#storageCardsEmpty').hidden = storageCatalog.length > 0;
     $('#storageSearchEmpty').hidden = storageCatalog.length === 0 || visibleItems.length > 0;
     $('#storageItemCount').textContent = inventory.length;
     $('#storageUnitCount').textContent = inventory.reduce((sum,row) => sum + row.quantity, 0).toLocaleString('pt-BR');
     $('#storageMovementCount').textContent = storageMovements.length.toLocaleString('pt-BR');
-    $('#storageInventoryRows').innerHTML = inventory.map(row => `<tr><td>${safe(row.name)}</td><td><b>${Math.max(0,row.QG).toLocaleString('pt-BR')}</b></td><td><b>${Math.max(0,row.Casa).toLocaleString('pt-BR')}</b></td><td><b>${row.quantity.toLocaleString('pt-BR')}</b></td><td>${new Date(row.latest).toLocaleString('pt-BR')}</td></tr>`).join('');
+    const inventoryQuery = normalizeSearchText($('#storageInventorySearch').value);
+    const visibleInventory = inventory.map(row => ({row,score:fuzzySearchScore(row.name,inventoryQuery)})).filter(result => result.score !== null).sort((a,b) => a.score-b.score || a.row.name.localeCompare(b.row.name,'pt-BR')).map(result => result.row);
+    const hasExactInventoryMatch = visibleInventory.some(row => normalizeSearchText(row.name).includes(inventoryQuery));
+    $('#storageInventoryCount').textContent = `${visibleInventory.length} de ${inventory.length} itens${inventoryQuery && visibleInventory.length && !hasExactInventoryMatch ? ' · resultados próximos' : ''}`;
+    $('#storageInventoryRows').innerHTML = visibleInventory.map(row => { const image = storageItemImage(row.name); return `<tr><td class="storage-item-name-cell">${image ? `<img class="storage-item-thumb" src="${image}" alt="" loading="lazy">` : ''}<span>${safe(row.name)}</span></td><td><b>${Math.max(0,row.QG).toLocaleString('pt-BR')}</b></td><td><b>${Math.max(0,row.Casa).toLocaleString('pt-BR')}</b></td><td><b>${row.quantity.toLocaleString('pt-BR')}</b></td><td>${new Date(row.latest).toLocaleString('pt-BR')}</td></tr>`; }).join('');
     $('#storageInventoryEmpty').hidden = inventory.length > 0;
-    const historyQuery = $('#storageHistorySearch').value.trim().toLocaleLowerCase('pt-BR'), historyType = $('#storageHistoryTypeFilter').value, historyDate = $('#storageHistoryDateFilter').value;
+    $('#storageInventorySearchEmpty').hidden = inventory.length === 0 || !inventoryQuery || visibleInventory.length > 0;
+    const historyQuery = normalizeSearchText($('#storageHistorySearch').value), historyType = $('#storageHistoryTypeFilter').value, historyDate = $('#storageHistoryDateFilter').value;
     const localHistoryDate = move => { const date = new Date(move.createdAt); return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`; };
-    const filteredMovements = storageMovements.filter(move => (!historyType || move.type === historyType) && (!historyDate || localHistoryDate(move) === historyDate) && [move.item,move.location,move.responsible,move.note,move.createdAt ? new Date(move.createdAt).toLocaleDateString('pt-BR') : ''].some(value => String(value || '').toLocaleLowerCase('pt-BR').includes(historyQuery)));
-    $('#storageHistoryCaption').textContent = `${filteredMovements.length} de ${storageMovements.length} movimentações`;
-    $('#storageHistoryRows').innerHTML = [...filteredMovements].sort((a,b) => new Date(b.createdAt)-new Date(a.createdAt)).map(move => `<tr><td>${new Date(move.createdAt).toLocaleString('pt-BR')}</td><td><span class="storage-movement ${move.type}">${move.type === 'entry' ? 'Entrada' : 'Retirada'}</span></td><td>${safe(move.item)}</td><td>${safe(move.location || 'QG')}</td><td>${Number(move.quantity).toLocaleString('pt-BR')}</td><td>${safe(move.responsible || '—')}${move.memberServerId ? `<small class="storage-member-id">ID ${safe(move.memberServerId)}</small>` : ''}</td><td>${safe(move.note || '—')}</td></tr>`).join('');
+    const movementSearchText = move => [move.item,move.location,move.responsible,move.note,move.createdAt ? new Date(move.createdAt).toLocaleDateString('pt-BR') : ''].map(value => String(value || '')).join(' ');
+    const filteredMovements = storageMovements.map(move => ({move,score:fuzzySearchScore(movementSearchText(move),historyQuery)})).filter(result => result.score !== null && (!historyType || result.move.type === historyType) && (!historyDate || localHistoryDate(result.move) === historyDate)).sort((a,b) => (historyQuery ? a.score-b.score : 0) || new Date(b.move.createdAt)-new Date(a.move.createdAt)).map(result => result.move);
+    const hasApproximateMovements = Boolean(historyQuery && filteredMovements.length && !filteredMovements.some(move => normalizeSearchText(movementSearchText(move)).includes(historyQuery)));
+    $('#storageHistoryCaption').textContent = `${filteredMovements.length} de ${storageMovements.length} movimentações${hasApproximateMovements ? ' · resultados aproximados' : ''}`;
+    $('#storageHistoryRows').innerHTML = filteredMovements.map(move => { const image=storageItemImage(move.item); return `<tr><td>${new Date(move.createdAt).toLocaleString('pt-BR')}</td><td><span class="storage-movement ${move.transferId ? 'transfer' : move.type}">${move.transferId ? 'Transferência' : move.type === 'entry' ? 'Entrada' : 'Retirada'}</span></td><td class="storage-item-name-cell">${image ? `<img class="storage-item-thumb" src="${image}" alt="" loading="lazy">` : ''}<span>${safe(move.item)}</span></td><td>${safe(move.location || 'QG')}</td><td>${Number(move.quantity).toLocaleString('pt-BR')}</td><td>${safe(move.responsible || '—')}${move.memberServerId ? `<small class="storage-member-id">ID ${safe(move.memberServerId)}</small>` : ''}</td><td>${safe(move.note || '—')}</td></tr>`; }).join('');
     $('#storageHistoryEmpty').hidden = filteredMovements.length > 0;
     if (storageMovements.length && !filteredMovements.length) { $('#storageHistoryEmpty b').textContent = 'Nenhuma movimentação encontrada'; $('#storageHistoryEmpty small').textContent = 'Ajuste a busca, o tipo ou a data.'; } else { $('#storageHistoryEmpty b').textContent = 'Sem movimentações registradas'; $('#storageHistoryEmpty small').textContent = 'O histórico aparecerá aqui depois da primeira operação.'; }
   }
@@ -672,10 +1016,10 @@
     const panel = $('#storageBatchPanel'); if (!panel) return;
     panel.hidden = pendingStorageMovements.length === 0;
     $('#storageBatchCount').textContent = `${pendingStorageMovements.length} ${pendingStorageMovements.length === 1 ? 'movimentação selecionada' : 'movimentações selecionadas'}`;
-    $('#storageBatchList').innerHTML = pendingStorageMovements.map((move,index) => `<div class="storage-batch-row"><span class="storage-movement ${move.type}">${move.type === 'entry' ? 'Entrada' : 'Retirada'}</span><b>${safe(move.item)}</b><span>${safe(move.location)}</span><strong>${Number(move.quantity).toLocaleString('pt-BR')} un.</strong><button type="button" class="storage-batch-remove" data-storage-batch-remove="${index}" aria-label="Remover ${safe(move.item)} da lista">×</button></div>`).join('');
+    $('#storageBatchList').innerHTML = pendingStorageMovements.map((move,index) => `<div class="storage-batch-row"><span class="storage-movement ${move.transferId ? 'transfer' : move.type}">${move.transferId ? 'Transferência' : move.type === 'entry' ? 'Adicionar' : 'Remover'}</span><b>${safe(move.item)}</b><span>${safe(move.transferRoute || move.location)}</span><strong>${Number(move.quantity).toLocaleString('pt-BR')} un.</strong><button type="button" class="storage-batch-remove" data-storage-batch-remove="${index}" aria-label="Remover ${safe(move.item)} da lista">×</button></div>`).join('');
     $('#commitStorageBatch').disabled = pendingStorageMovements.length === 0;
   }
-  $('#storageBatchList').addEventListener('click', event => { const button = event.target.closest('[data-storage-batch-remove]'); if (!button) return; pendingStorageMovements.splice(Number(button.dataset.storageBatchRemove),1); renderStorageBatch(); renderStorage(); });
+  $('#storageBatchList').addEventListener('click', event => { const button = event.target.closest('[data-storage-batch-remove]'); if (!button) return; const move = pendingStorageMovements[Number(button.dataset.storageBatchRemove)]; if (!move) return; if (move.transferId) pendingStorageMovements = pendingStorageMovements.filter(item => item.transferId !== move.transferId); else pendingStorageMovements.splice(Number(button.dataset.storageBatchRemove),1); renderStorageBatch(); renderStorage(); });
   $('#clearStorageBatch').addEventListener('click', () => { pendingStorageMovements = []; renderStorageBatch(); renderStorage(); });
   $('#commitStorageBatch').addEventListener('click', () => {
     const activeMember = getStorageMember();
@@ -690,9 +1034,9 @@
       balances.set(key,balance + (move.type === 'entry' ? Number(move.quantity) : -Number(move.quantity)));
     }
     const now = Date.now();
-    const committed = pendingStorageMovements.map((move,index) => ({type:move.type,item:move.item,location:move.location,quantity:Number(move.quantity),responsible:activeMember.name,memberServerId:activeMember.server_id,note:'Movimentação em lote',createdAt:new Date(now+index).toISOString()}));
+    const committed = pendingStorageMovements.map((move,index) => ({id:move.id || `storage-move-${now}-${index}`,transferId:move.transferId || '',type:move.type,item:move.item,location:move.location,quantity:Number(move.quantity),responsible:activeMember.name,memberServerId:activeMember.server_id,note:move.transferId ? move.note : 'Movimentação em lote',createdAt:new Date(now+index).toISOString()}));
     storageMovements = [...committed,...storageMovements]; saveLocalState('vertice_storage_movements',JSON.stringify(storageMovements));
-    const count = committed.length; pendingStorageMovements = []; renderStorageBatch(); renderStorageCatalog(); renderStorage(); toast(`${count} ${count === 1 ? 'movimentação registrada' : 'movimentações registradas'} no baú.`);
+    const count = committed.length; pendingStorageMovements = []; renderStorageBatch(); renderStorageCatalog(); renderStorage(); renderPersonalArea(); notifyCompletedDirtyMoneyGoals(committed); toast(`${count} ${count === 1 ? 'movimentação registrada' : 'movimentações registradas'} no baú.`);
   });
   $('#storageMovementForm').addEventListener('submit', e => {
     e.preventDefault();
@@ -702,11 +1046,23 @@
     const type = $('#storageType').value, location = $('#storageLocation').value, catalogItem = storageCatalog.find(entry => String(entry.id) === $('#storageSelectedItem').value), item = catalogItem?.name || '', quantity = Number($('#storageQuantity').value);
     if (!catalogItem) return toast('Selecione um item do catálogo.');
     if (!Number.isInteger(quantity) || quantity < 1) return toast('Informe uma quantidade inteira maior que zero.');
+    if (type === 'transfer') {
+      const destination = location === 'Casa' ? 'QG' : 'Casa', actualAvailable = getStorageItemBalances(item)[location];
+      const reserved = pendingStorageMovements.filter(move => move.item.toLocaleLowerCase('pt-BR') === item.toLocaleLowerCase('pt-BR') && move.location === location && move.type === 'withdrawal').reduce((sum,move) => sum + Number(move.quantity),0);
+      const available = Math.max(0,actualAvailable - reserved);
+      if (quantity > available) return toast(`Estoque insuficiente de ${item} na ${location}. Disponível para transferir: ${available}.`);
+      const transferId = `storage-transfer-${Date.now()}`, route = `${location} → ${destination}`, note = `Transferência ${route}`;
+      pendingStorageMovements.push(
+        {id:`${transferId}-out`,transferId,transferRoute:route,note,type:'withdrawal',itemId:String(catalogItem.id),item,location,quantity},
+        {id:`${transferId}-in`,transferId,transferRoute:route,note,type:'entry',itemId:String(catalogItem.id),item,location:destination,quantity}
+      );
+      closeStorageMovement(); renderStorageBatch(); renderStorage(); return toast(`Transferência ${route} adicionada à lista.`);
+    }
     const currentBalance = storageMovements.reduce((sum,move) => move.item.trim().toLocaleLowerCase('pt-BR') === item.toLocaleLowerCase('pt-BR') && (move.location || 'QG') === location ? sum + (move.type === 'entry' ? Number(move.quantity) : -Number(move.quantity)) : sum, 0);
     const queuedBalance = pendingStorageMovements.filter(move => move.item.toLocaleLowerCase('pt-BR') === item.toLocaleLowerCase('pt-BR') && move.location === location).reduce((sum,move) => sum + (move.type === 'entry' ? Number(move.quantity) : -Number(move.quantity)),0), available = currentBalance + queuedBalance;
     if (type === 'withdrawal' && quantity > available) return toast(`Estoque insuficiente de ${item} em ${location}. Saldo disponível: ${Math.max(0,available)}.`);
     pendingStorageMovements.push({type,itemId:String(catalogItem.id),item,location,quantity});
-    closeStorageMovement(); renderStorageBatch(); renderStorage(); toast('Movimentação adicionada à lista.');
+    closeStorageMovement(); renderStorageBatch(); renderStorage(); toast(type === 'entry' ? 'Adição incluída na lista.' : 'Retirada incluída na lista.');
   });  function applySiteSettings() {
     if (String(siteSettings.accent || '').toLowerCase() === '#c8f36a') siteSettings.accent = '#28b8ff';
     document.documentElement.style.setProperty('--green', siteSettings.accent || defaultSiteSettings.accent);
@@ -735,13 +1091,16 @@
     if (view === 'login') {
       document.body.classList.add('auth-screen');
       $('#loginView').hidden = false; $('#dashboardView').hidden = true;
-      $('#employeeView').hidden = true; $('#ownerView').hidden = true; $('#storageView').hidden = true; $('#ordersView').hidden = true; $('#clientsView').hidden = true;
+      $('#employeeView').hidden = true; $('#ownerView').hidden = true; $('#storageView').hidden = true; $('#ordersView').hidden = true; $('#clientsView').hidden = true; $('#personalView').hidden = true;
       document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
       $('#crumb').textContent = titles.login;
       $('#sidebar').classList.remove('open'); $('.mobile-nav-backdrop')?.classList.remove('show');
       return;
     }
-    if (['owner','equipe'].includes(view) && hasDonoAccount() && String(getStorageMember()?.role || '').toLocaleLowerCase('pt-BR') !== 'dono') { requestMemberLogin(view); return; }
+    if (view === 'owner' && hasDonoAccount() && String(getStorageMember()?.role || '').toLocaleLowerCase('pt-BR') !== 'dono') { requestMemberLogin(view); return; }
+    if (view === 'equipe' && hasDonoAccount() && !canManageEmployeeStatus()) { requestMemberLogin(view); return; }
+    if (view === 'pessoal' && !getStorageMember()) { requestMemberLogin(view); return; }
+    if (view === 'pessoal' && !canManagePersonalAreas()) { selectedPersonalMemberId = String(getStorageMember().server_id); }
     if (['bau','encomendas','clientes'].includes(view) && !getStorageMember()) { requestMemberLogin(view); return; }
     if (['bau','encomendas','clientes'].includes(view) && !hasMemberPermission(getStorageMember(),view)) { toast('Seu acesso não está liberado para esta área.'); return; }
     document.body.classList.remove('auth-screen');
@@ -750,11 +1109,12 @@
     $('#crumb').textContent = titles[view] || view;
     $('#dashboardView').hidden = !['inicio','financeiro','operacoes','estoque','relatorios','configuracoes'].includes(view);
     $('#employeeView').hidden = view !== 'equipe'; $('#ownerView').hidden = view !== 'owner'; $('#storageView').hidden = view !== 'bau';
-    $('#ordersView').hidden = view !== 'encomendas'; $('#clientsView').hidden = view !== 'clientes';
+    $('#ordersView').hidden = view !== 'encomendas'; $('#clientsView').hidden = view !== 'clientes'; $('#personalView').hidden = view !== 'pessoal';
     if (view === 'equipe') renderEmployees();
     else if (view === 'bau') { renderStorageCatalog(); renderStorage(); }
     else if (view === 'encomendas') { renderProducts(); renderOrders(); }
     else if (view === 'clientes') renderClients();
+    else if (view === 'pessoal') renderPersonalArea();
     else if (view === 'owner') applySiteSettings();
     else if(view !== 'inicio') toast(`${titles[view]}: seção pronta para personalizar.`);
     $('#sidebar').classList.remove('open'); $('.mobile-nav-backdrop')?.classList.remove('show');
@@ -778,24 +1138,40 @@
     siteCopy = {}; localStorage.removeItem('vertice_site_copy'); window.location.reload();
   });
   function renderEmployees() {
-    const query = ($('#employeeSearch').value || '').trim().toLocaleLowerCase('pt-BR');
+    const ownerAccess = !hasDonoAccount() || String(getStorageMember()?.role || '').toLocaleLowerCase('pt-BR') === 'dono';
+    const statusAccess = canManageEmployeeStatus();
+    $('#employeeFormPanel').hidden = !ownerAccess;
+    document.querySelector('.role-manager-panel').hidden = !ownerAccess;
+    const query = normalizeSearchText($('#employeeSearch').value);
     const selectedRole = $('#employeeRoleFilter').value, selectedStatus = $('#employeeStatusFilter').value;
     $('#employeeRoleFilter').innerHTML = '<option value="">Todos os cargos</option>' + memberRoles.map(role => `<option value="${safe(role)}">${safe(role)}</option>`).join('');
     $('#employeeRoleFilter').value = memberRoles.includes(selectedRole) ? selectedRole : '';
-    const filtered = employees.filter(x => (!selectedRole || x.role === selectedRole) && (!selectedStatus || (x.status === 'inactive' ? 'inactive' : 'active') === selectedStatus) && [x.name,x.server_id,x.role,x.phone].some(v => String(v || '').toLocaleLowerCase('pt-BR').includes(query)));
+    const employeeSearchText = employee => [employee.name,employee.server_id,employee.role,employee.phone].map(value => String(value || '')).join(' ');
+    const filtered = employees.map(employee => ({employee,score:fuzzySearchScore(employeeSearchText(employee),query)})).filter(result => result.score !== null && (!selectedRole || result.employee.role === selectedRole) && (!selectedStatus || (result.employee.status === 'inactive' ? 'inactive' : 'active') === selectedStatus)).sort((a,b) => a.score-b.score || a.employee.name.localeCompare(b.employee.name,'pt-BR')).map(result => result.employee);
+    const hasApproximateEmployees = Boolean(query && filtered.length && !filtered.some(employee => normalizeSearchText(employeeSearchText(employee)).includes(query)));
     $('#employeeTotal').textContent = employees.length; $('#employeeActive').textContent = employees.filter(x => x.status === 'active').length;
     $('#employeeRoles').textContent = memberRoles.length;
-    $('#employeeListCaption').textContent = `${filtered.length} de ${employees.length} ${employees.length === 1 ? 'membro' : 'membros'}`;
+    $('#employeeListCaption').textContent = `${filtered.length} de ${employees.length} ${employees.length === 1 ? 'membro' : 'membros'}${hasApproximateEmployees ? ' · resultados aproximados' : ''}`;
     $('#employeeRows').innerHTML = filtered.map(x => {
       const initials = String(x.name || '?').split(/\s+/).slice(0,2).map(n => n[0]).join('').toUpperCase();
       const hasAccount = Boolean(memberAccounts[String(x.server_id)]);
-      return `<tr><td><span class="employee-person"><i class="avatar avatar-blue">${safe(initials)}</i><b>${safe(x.name)}<small>${safe(x.role)}</small></b></span></td><td>${safe(x.server_id || '—')}</td><td>${safe(x.role || '—')}</td><td>${safe(x.phone || '—')}</td><td><span class="employee-status ${x.status === 'inactive' ? 'inactive' : ''}">${x.status === 'inactive' ? 'Inativo' : 'Ativo'}</span></td><td><button class="employee-access" data-member-account="${safe(x.server_id)}">${hasAccount ? 'Alterar login' : 'Criar login'}</button> <button class="employee-delete" data-delete-employee="${safe(x.id)}" title="Remover membro" aria-label="Remover ${safe(x.name)}">×</button></td></tr>`;
+      const memberActions = ownerAccess ? `<button class="employee-access" data-edit-member-role="${safe(x.server_id)}">Editar membro</button> <button class="employee-access" data-member-account="${safe(x.server_id)}">${hasAccount ? 'Alterar login' : 'Criar login'}</button> <button class="employee-delete" data-delete-employee="${safe(x.id)}" title="Remover membro" aria-label="Remover ${safe(x.name)}">×</button>` : statusAccess ? `<button class="employee-access" data-toggle-member-status="${safe(x.server_id)}">${x.status === 'inactive' ? 'Reativar' : 'Inativar'}</button>` : '';
+      return `<tr><td><span class="employee-person"><i class="avatar avatar-blue">${safe(initials)}</i><b>${safe(x.name)}<small>${safe(x.role)}</small></b></span></td><td>${safe(x.server_id || '—')}</td><td>${safe(x.role || '—')}</td><td>${safe(x.phone || '—')}</td><td><span class="employee-status ${x.status === 'inactive' ? 'inactive' : ''}">${x.status === 'inactive' ? 'Inativo' : 'Ativo'}</span></td><td>${memberActions}</td></tr>`;
     }).join('');
     $('#employeeEmpty').hidden = filtered.length > 0;
     if (employees.length && !filtered.length) { $('#employeeEmpty b').textContent = 'Nenhum membro encontrado'; $('#employeeEmpty small').textContent = 'Ajuste a busca ou os filtros de cargo e status.'; } else { $('#employeeEmpty b').textContent = 'Nenhum membro cadastrado'; $('#employeeEmpty small').textContent = 'Adicione o primeiro membro para começar a organizar sua equipe.'; }
     document.querySelectorAll('[data-delete-employee]').forEach(button => button.addEventListener('click', () => deleteEmployee(button.dataset.deleteEmployee)));
     document.querySelectorAll('[data-member-account]').forEach(button => button.addEventListener('click', () => openMemberAccount(button.dataset.memberAccount)));
+    document.querySelectorAll('[data-edit-member-role]').forEach(button => button.addEventListener('click', () => openMemberRoleEditor(button.dataset.editMemberRole)));
+    document.querySelectorAll('[data-toggle-member-status]').forEach(button => button.addEventListener('click', () => {
+      if (!canManageEmployeeStatus()) return toast('Somente um Gerente ou Dono pode alterar o status do membro.');
+      const member = employees.find(item => String(item.server_id) === String(button.dataset.toggleMemberStatus)); if (!member) return;
+      if (member.status !== 'inactive' && String(member.role || '').toLocaleLowerCase('pt-BR') === 'dono' && isSoleActiveOwner(member)) return toast('Cadastre outro Dono ativo antes de desativar esta conta.');
+      member.status = member.status === 'inactive' ? 'active' : 'inactive'; saveLocalState('vertice_employees',JSON.stringify(employees));
+      renderEmployees(); syncOwnerNavigation(); toast(`${member.name} agora está ${member.status === 'active' ? 'ativo' : 'inativo'}.`);
+    }));
     renderMemberPermissions();
+    renderPersonalArea();
   }
   function renderRoles() {
     const roleSelect = $('#employeeRole');
@@ -826,6 +1202,32 @@
   $('#employeeSearch').addEventListener('input', renderEmployees);
   $('#employeeRoleFilter').addEventListener('change', renderEmployees);
   $('#employeeStatusFilter').addEventListener('change', renderEmployees);
+  function openMemberRoleEditor(serverId) {
+    if (!canManagePermissions()) return toast('Somente o Dono pode editar os dados dos membros.');
+    const member = employees.find(item => String(item.server_id) === String(serverId)); if (!member) return;
+    $('#employeeRoleEditServerId').value = String(member.server_id);
+    $('#employeeRoleEditMember').textContent = `${member.name} · ID ${member.server_id}`;
+    const options = [...new Set([...memberRoles, member.role].filter(Boolean))];
+    $('#employeeRoleEditSelect').innerHTML = options.map(role => `<option value="${safe(role)}">${safe(role)}</option>`).join('');
+    $('#employeeRoleEditSelect').value = member.role;
+    $('#employeeRoleEditStatus').value = member.status === 'inactive' ? 'inactive' : 'active';
+    $('#employeeRoleEditBackdrop').classList.add('open');
+    $('#employeeRoleEditSelect').focus();
+  }
+  const closeMemberRoleEditor = () => $('#employeeRoleEditBackdrop').classList.remove('open');
+  $('#closeEmployeeRoleEdit').addEventListener('click', closeMemberRoleEditor);
+  $('#cancelEmployeeRoleEdit').addEventListener('click', closeMemberRoleEditor);
+  $('#employeeRoleEditBackdrop').addEventListener('click', event => { if (event.target.id === 'employeeRoleEditBackdrop') closeMemberRoleEditor(); });
+  $('#employeeRoleEditForm').addEventListener('submit', event => {
+    event.preventDefault();
+    if (!canManagePermissions()) return toast('Somente o Dono pode editar os dados dos membros.');
+    const serverId = String($('#employeeRoleEditServerId').value), member = employees.find(item => String(item.server_id) === serverId), role = $('#employeeRoleEditSelect').value, status = $('#employeeRoleEditStatus').value;
+    if (!member || !role) return;
+    if (String(member.server_id) === String(getStorageMember()?.server_id) && status === 'inactive' && String(member.role).toLocaleLowerCase('pt-BR') === 'dono' && !employees.some(item => String(item.server_id) !== serverId && item.status !== 'inactive' && String(item.role).toLocaleLowerCase('pt-BR') === 'dono' && memberAccounts[String(item.server_id)])) return toast('Cadastre outro Dono ativo com acesso antes de desativar esta conta.');
+    const roleChanged = member.role !== role, statusChanged = (member.status === 'inactive' ? 'inactive' : 'active') !== status;
+    member.role = role; member.status = status; saveLocalState('vertice_employees',JSON.stringify(employees));
+    closeMemberRoleEditor(); renderEmployees(); syncOwnerNavigation(); toast(statusChanged ? `${member.name} agora está ${status === 'active' ? 'ativo' : 'inativo'}.` : roleChanged ? `Cargo de ${member.name} atualizado.` : 'Dados do membro atualizados.');
+  });
   $('#resetAllData').addEventListener('click', async () => {
     if (config.url && config.key) {
       try {
@@ -841,9 +1243,9 @@
       } catch (error) { toast(error.message || 'Não foi possível limpar os dados remotos.'); return; }
     }
     Object.keys(localStorage).filter(key => key.startsWith('vertice_') && key !== 'vertice_supabase').forEach(key => localStorage.removeItem(key));
-    transactions = []; employees = []; storageMovements = []; storageCatalog = []; orders = []; clients = []; products = []; memberAccounts = {}; rolePermissions = {}; memberPermissions = {}; sessionStorage.removeItem(storageSessionKey); memberRoles = [...defaultRoles]; siteSettings = { ...defaultSiteSettings };
-     saveLocalState('vertice_transactions','[]'); saveLocalState('vertice_employees','[]'); saveLocalState('vertice_storage_movements','[]'); saveLocalState('vertice_storage_catalog','[]'); saveLocalState('vertice_orders','[]'); saveLocalState('vertice_clients','[]'); saveLocalState('vertice_products','[]'); saveLocalState('vertice_role_permissions','{}'); saveLocalState('vertice_member_permissions','{}'); saveLocalState('vertice_member_roles',JSON.stringify(memberRoles)); saveLocalState('vertice_reset_completed','true');
-     cloudSyncReady = Boolean(config.url && config.key); applyTheme(); applySiteSettings(); renderRoles(); renderEmployees(); renderStorageCatalog(); renderStorage(); renderProducts(); renderOrders(); renderClients(); updateMetrics(); renderActivity(); syncOwnerNavigation();
+    transactions = []; employees = []; storageMovements = []; storageCatalog = []; orders = []; clients = []; products = []; memberAccounts = {}; rolePermissions = {}; memberPermissions = {}; personalAreaTabs = {}; personalGoals = {}; personalMessages = {}; sessionStorage.removeItem(storageSessionKey); memberRoles = [...defaultRoles]; siteSettings = { ...defaultSiteSettings };
+     saveLocalState('vertice_transactions','[]'); saveLocalState('vertice_employees','[]'); saveLocalState('vertice_storage_movements','[]'); saveLocalState('vertice_storage_catalog','[]'); saveLocalState('vertice_orders','[]'); saveLocalState('vertice_clients','[]'); saveLocalState('vertice_products','[]'); saveLocalState('vertice_role_permissions','{}'); saveLocalState('vertice_member_permissions','{}'); saveLocalState('vertice_personal_area_tabs','{}'); saveLocalState('vertice_personal_goals','{}'); saveLocalState('vertice_personal_messages','{}'); saveLocalState('vertice_member_roles',JSON.stringify(memberRoles)); saveLocalState('vertice_reset_completed','true');
+     cloudSyncReady = Boolean(config.url && config.key); applyTheme(); applySiteSettings(); renderRoles(); renderEmployees(); renderStorageCatalog(); renderStorage(); renderProducts(); renderOrders(); renderClients(); renderPersonalArea(); updateMetrics(); renderActivity(); syncOwnerNavigation();
     document.querySelectorAll('.team-table .team-row:not(.team-head)').forEach(row => row.remove());
     toast('Informações apagadas.');
   });
@@ -858,7 +1260,7 @@
   });
   async function deleteEmployee(id) {
     const employee = employees.find(x => String(x.id) === String(id)); if (!employee) return;
-    employees = employees.filter(x => String(x.id) !== String(id)); delete memberAccounts[String(employee.server_id)]; delete memberPermissions[String(employee.server_id)]; saveLocalState('vertice_member_accounts',JSON.stringify(memberAccounts)); saveLocalState('vertice_member_permissions',JSON.stringify(memberPermissions)); if (String(employee.server_id) === sessionStorage.getItem(storageSessionKey)) sessionStorage.removeItem(storageSessionKey); saveLocalState('vertice_employees',JSON.stringify(employees)); renderEmployees(); renderStorage(); syncOwnerNavigation(); toast('Membro removido.');
+    employees = employees.filter(x => String(x.id) !== String(id)); delete memberAccounts[String(employee.server_id)]; delete memberPermissions[String(employee.server_id)]; delete personalAreaTabs[String(employee.server_id)]; delete personalGoals[String(employee.server_id)]; delete personalMessages[String(employee.server_id)]; saveLocalState('vertice_member_accounts',JSON.stringify(memberAccounts)); saveLocalState('vertice_member_permissions',JSON.stringify(memberPermissions)); saveLocalState('vertice_personal_area_tabs',JSON.stringify(personalAreaTabs)); saveLocalState('vertice_personal_goals',JSON.stringify(personalGoals)); saveLocalState('vertice_personal_messages',JSON.stringify(personalMessages)); if (String(employee.server_id) === sessionStorage.getItem(storageSessionKey)) sessionStorage.removeItem(storageSessionKey); saveLocalState('vertice_employees',JSON.stringify(employees)); renderEmployees(); renderStorage(); syncOwnerNavigation(); toast('Membro removido.');
   }
   $('#menuToggle').addEventListener('click', () => { $('#sidebar').classList.toggle('open'); let back = $('.mobile-nav-backdrop'); if (!back) { back = document.createElement('div'); back.className='mobile-nav-backdrop'; document.body.appendChild(back); back.addEventListener('click', () => { $('#sidebar').classList.remove('open'); back.classList.remove('show'); }); } back.classList.toggle('show'); });
   $('#periodSelect').addEventListener('change', e => { const months = Number(e.target.value); document.querySelectorAll('#chart .bar-group').forEach((bar,i,all) => { bar.style.display = months === 3 ? (i >= all.length-3 ? 'flex':'none') : 'flex'; }); });
@@ -869,6 +1271,11 @@
   let startupView = startupMember ? memberLandingView(startupMember) : 'login';
   if (!startupView) { sessionStorage.removeItem(storageSessionKey); startupView = 'login'; $('#loginNotice').textContent = 'Sua conta ainda não tem uma área liberada. Peça ao Dono para configurar suas permissões.'; }
   requestedProtectedView = 'login'; showView(startupView);
+  ['pointerdown','keydown','touchstart','wheel','scroll','click'].forEach(eventName => document.addEventListener(eventName,recordMemberActivity,{capture:true,passive:true}));
+  document.addEventListener('pointermove',recordMemberActivity,{passive:true});
+  document.addEventListener('visibilitychange',() => { if (!document.hidden) startMemberInactivityMonitor(); });
+  window.addEventListener('focus',startMemberInactivityMonitor);
+  startMemberInactivityMonitor();
   if (config.url && config.key) {
     loadRemote();
     // Busca alterações feitas por outras pessoas sem interromper quem está preenchendo um campo.
@@ -880,6 +1287,7 @@
     });
   }
 })();
+
 
 
 
